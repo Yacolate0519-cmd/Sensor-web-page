@@ -1,8 +1,13 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
+import queue
 import time
 import numpy as np
+import matplotlib
+# 必須在匯入 pyplot 之前指定。否則 macOS 會自動選 macosx backend，
+# Windows 在安裝 PyQt5 後會選 QtAgg，兩者都與下面的 Tk 畫布不相容。
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import datetime
@@ -32,7 +37,13 @@ class SensorIntegrationGUI:
         
         # 音訊設備列表
         self.audio_devices = []
-        
+
+        # 工作執行緒與 GUI 之間的橋樑。
+        # Tcl/Tk 9 不允許從非主執行緒呼叫 root.after()，回呼會被靜默丟棄，
+        # 跨執行緒的 Tcl 呼叫還會讓程式直接閃退。因此工作執行緒一律改用
+        # self.post()，把要執行的動作放進佇列，由主執行緒定期取出執行。
+        self._ui_queue = queue.Queue()
+
         self.setup_gui()
         self.refresh_com_ports()
         self.refresh_audio_devices()
@@ -57,7 +68,32 @@ class SensorIntegrationGUI:
         self.OUT_NO = 0
         self.SAMPLING_US = 1000
         self.RANGE_CODE = 0
-        
+
+        # 開始輪詢佇列（必須在主執行緒排入）
+        self._drain_ui_queue()
+
+    def post(self, callback):
+        """由工作執行緒呼叫，把 GUI 動作交給主執行緒執行。
+
+        取代原本工作執行緒直接呼叫 root.after() 的寫法：after() 只能在主
+        執行緒呼叫，從工作執行緒呼叫時回呼不會被執行，且有機率讓程式閃退。
+        """
+        self._ui_queue.put(callback)
+
+    def _drain_ui_queue(self):
+        """在主執行緒取出並執行工作執行緒排入的 GUI 動作。"""
+        while True:
+            try:
+                callback = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback()
+            except Exception as e:
+                print(f"GUI 更新錯誤: {e}")
+
+        self.root.after(50, self._drain_ui_queue)
+
     def setup_gui(self):
         # 主框架
         main_frame = ttk.Frame(self.root, padding="10")
@@ -350,8 +386,10 @@ class SensorIntegrationGUI:
 
     def start_temperature_monitoring(self):
         """開始溫度監測執行緒"""
+        # Tk 變數只能在主執行緒讀取，先取值再交給工作執行緒
+        com_port = self.com_temp_var.get()
+
         def temp_worker():
-            com_port = self.com_temp_var.get()
             consecutive_failures = 0
             max_failures = 10  # 增加容錯次數
             sensor_disconnected = False
@@ -365,31 +403,31 @@ class SensorIntegrationGUI:
                         consecutive_failures = 0  # 重置失敗計數
                         if sensor_disconnected:
                             # 感測器重新連接成功
-                            self.root.after(0, lambda: messagebox.showinfo("通知", "溫度感測器已重新連接"))
+                            self.post(lambda: messagebox.showinfo("通知", "溫度感測器已重新連接"))
                             sensor_disconnected = False
-                        self.root.after(0, lambda t=temp: self.temp_label.config(text=f"溫度: {t:.1f} °C"))
+                        self.post(lambda t=temp: self.temp_label.config(text=f"溫度: {t:.1f} °C"))
                     else:
                         consecutive_failures += 1
-                        self.root.after(0, lambda: self.temp_label.config(text="溫度: 讀取失敗"))
+                        self.post(lambda: self.temp_label.config(text="溫度: 讀取失敗"))
                         
                         # 如果連續失敗達到上限，標記為斷線但繼續運行
                         if consecutive_failures >= max_failures and not sensor_disconnected:
                             sensor_disconnected = True
-                            self.root.after(0, lambda: messagebox.showwarning("警告", 
+                            self.post(lambda: messagebox.showwarning("警告", 
                                 f"溫度感測器可能已斷線，監測將繼續但不會讀取溫度數據"))
-                            self.root.after(0, lambda: self.temp_label.config(text="溫度: 感測器斷線"))
+                            self.post(lambda: self.temp_label.config(text="溫度: 感測器斷線"))
                             
                     time.sleep(1)  # 溫度每秒更新一次
                     
                 except Exception as e:
                     print(f"溫度讀取錯誤: {e}")
                     consecutive_failures += 1
-                    self.root.after(0, lambda: self.temp_label.config(text="溫度: 連接錯誤"))
+                    self.post(lambda: self.temp_label.config(text="溫度: 連接錯誤"))
                     
                     # 只在第一次出現錯誤時提示，之後繼續運行
                     if consecutive_failures == max_failures and not sensor_disconnected:
                         sensor_disconnected = True
-                        self.root.after(0, lambda err=str(e): messagebox.showwarning("警告", 
+                        self.post(lambda err=str(e): messagebox.showwarning("警告", 
                             f"溫度感測器錯誤: {err}\n監測將繼續但不會讀取溫度數據"))
                     
                     time.sleep(1)
@@ -399,17 +437,18 @@ class SensorIntegrationGUI:
     
     def start_audio_monitoring(self, sample_rate, update_interval, history_duration, duration):
         """開始音訊監測執行緒"""
+        # Tk 變數只能在主執行緒讀取，先取值再交給工作執行緒
+        device_index = self.get_selected_audio_device_index()
+
         def audio_worker():
             try:
                 # 初始化音訊相關變數
                 self.audio_history = np.array([], dtype=np.int16)
                 max_history_samples = int(history_duration * sample_rate)
-                
-                # 取得選中的音訊設備索引
-                device_index = self.get_selected_audio_device_index()
+
                 if device_index is None:
                     raise Exception("無效的音訊設備")
-                
+
                 # 初始化錄音器，指定設備索引
                 self.audio_recorder = AudioRecorder(
                     sample_rate=sample_rate, 
@@ -432,7 +471,7 @@ class SensorIntegrationGUI:
                         break
                     
                     # 更新時間顯示
-                    self.root.after(0, lambda t=elapsed_time: self.time_label.config(text=f"執行時間: {int(t)} 秒"))
+                    self.post(lambda t=elapsed_time: self.time_label.config(text=f"執行時間: {int(t)} 秒"))
                     
                     try:
                         # 錄製音訊數據
@@ -444,13 +483,13 @@ class SensorIntegrationGUI:
                                 self.audio_history = self.audio_history[-max_history_samples:]
                             
                             # 更新圖形 (在主執行緒中執行)
-                            self.root.after(0, lambda s=single_ori.copy(), h=self.audio_history.copy(): 
+                            self.post(lambda s=single_ori.copy(), h=self.audio_history.copy(): 
                                           self.update_plots_with_signal_package(s, h, sample_rate))
                         
                         # 重置錯誤通知標誌
                         if audio_error_notified:
                             audio_error_notified = False
-                            self.root.after(0, lambda: messagebox.showinfo("通知", "音訊設備已恢復正常"))
+                            self.post(lambda: messagebox.showinfo("通知", "音訊設備已恢復正常"))
                             
                     except Exception as audio_error:
                         print(f"音訊錄製錯誤: {audio_error}")
@@ -458,7 +497,7 @@ class SensorIntegrationGUI:
                         # 只在第一次出現錯誤時通知用戶
                         if not audio_error_notified:
                             audio_error_notified = True
-                            self.root.after(0, lambda err=str(audio_error): messagebox.showwarning("警告", 
+                            self.post(lambda err=str(audio_error): messagebox.showwarning("警告", 
                                 f"音訊錄製出現錯誤: {err}\n監測將繼續但音訊數據可能不完整"))
                     
                     iteration += 1
@@ -469,17 +508,20 @@ class SensorIntegrationGUI:
                     self.audio_recorder = None
                 
                 # 儲存最終數據
+                # 此函式會繪圖並呼叫 canvas.draw()，Tk 不是執行緒安全的，
+                # 直接在工作執行緒呼叫會讓整個程式閃退，必須丟回主執行緒
                 if len(self.audio_history) > 0:
-                    self.save_final_data_with_signal_package(self.audio_history, sample_rate)
+                    self.post(lambda h=self.audio_history.copy(), sr=sample_rate:
+                                    self.save_final_data_with_signal_package(h, sr))
                 else:
-                    self.root.after(0, lambda: messagebox.showwarning("警告", "沒有錄製到音訊數據"))
+                    self.post(lambda: messagebox.showwarning("警告", "沒有錄製到音訊數據"))
                 
                 # 停止監測
-                self.root.after(0, self.stop_monitoring)
+                self.post(self.stop_monitoring)
                 
             except Exception as e:
                 print(f"音訊監測錯誤: {e}")
-                self.root.after(0, lambda: messagebox.showwarning("警告", 
+                self.post(lambda: messagebox.showwarning("警告", 
                     f"音訊監測出現問題: {e}\n監測將繼續但不會有音訊數據"))
                 
                 # 如果音訊失敗，仍需要處理執行時間
@@ -529,38 +571,38 @@ class SensorIntegrationGUI:
                             
                             consecutive_failures = 0
                             if sensor_disconnected:
-                                self.root.after(0, lambda: messagebox.showinfo("通知", "測距儀已重新連接"))
+                                self.post(lambda: messagebox.showinfo("通知", "測距儀已重新連接"))
                                 sensor_disconnected = False
                             
-                            self.root.after(0, lambda d=abs_distance: 
+                            self.post(lambda d=abs_distance: 
                                         self.distance_label.config(text=f"距離: {d:.1f} mm"))
                         else:
                             consecutive_failures += 1
-                            self.root.after(0, lambda: self.distance_label.config(text="距離: 讀取失敗"))
+                            self.post(lambda: self.distance_label.config(text="距離: 讀取失敗"))
                             
                             if consecutive_failures >= max_failures and not sensor_disconnected:
                                 sensor_disconnected = True
-                                self.root.after(0, lambda: messagebox.showwarning("警告", 
+                                self.post(lambda: messagebox.showwarning("警告", 
                                     "測距儀可能已斷線，監測將繼續但不會讀取距離數據"))
-                                self.root.after(0, lambda: self.distance_label.config(text="距離: 感測器斷線"))
+                                self.post(lambda: self.distance_label.config(text="距離: 感測器斷線"))
                         
                         time.sleep(interval)
                         
                     except Exception as e:
                         print(f"測距儀讀取錯誤: {e}")
                         consecutive_failures += 1
-                        self.root.after(0, lambda: self.distance_label.config(text="距離: 連接錯誤"))
+                        self.post(lambda: self.distance_label.config(text="距離: 連接錯誤"))
                         
                         if consecutive_failures == max_failures and not sensor_disconnected:
                             sensor_disconnected = True
-                            self.root.after(0, lambda err=str(e): messagebox.showwarning("警告", 
+                            self.post(lambda err=str(e): messagebox.showwarning("警告", 
                                 f"測距儀錯誤: {err}\n監測將繼續但不會讀取距離數據"))
                         
                         time.sleep(interval)
                         
             except Exception as e:
                 print(f"測距儀監測錯誤: {e}")
-                self.root.after(0, lambda: messagebox.showwarning("警告", 
+                self.post(lambda: messagebox.showwarning("警告", 
                     f"測距儀監測出現問題: {e}\n監測將繼續但不會有距離數據"))
             finally:
                 if self.rangefinder_device:
@@ -597,11 +639,11 @@ class SensorIntegrationGUI:
                 
                 # 檢查是否達到設定時間
                 if duration > 0 and elapsed_time >= duration:
-                    self.root.after(0, self.stop_monitoring)
+                    self.post(self.stop_monitoring)
                     break
                 
                 # 更新時間顯示
-                self.root.after(0, lambda t=elapsed_time: self.time_label.config(text=f"執行時間: {int(t)} 秒"))
+                self.post(lambda t=elapsed_time: self.time_label.config(text=f"執行時間: {int(t)} 秒"))
                 
                 time.sleep(0.1)  # 每0.1秒更新一次時間
         
@@ -716,13 +758,13 @@ class SensorIntegrationGUI:
                     print(f"頻譜數據已成功寫入 MongoDB。")
                 except Exception as db_error:
                     print(f"寫入 MongoDB 失敗: {db_error}")
-                    self.root.after(0, lambda: messagebox.showwarning("資料庫錯誤", f"寫入頻譜數據到 MongoDB 失敗: {db_error}"))
+                    self.post(lambda: messagebox.showwarning("資料庫錯誤", f"寫入頻譜數據到 MongoDB 失敗: {db_error}"))
             
             # 更新最終顯示
             self.canvas.draw()
             
             # 顯示完成訊息
-            self.root.after(0, lambda: messagebox.showinfo("完成", 
+            self.post(lambda: messagebox.showinfo("完成", 
                 f"監測完成！\n數據已儲存至: spectrogram_{experiment_id}.csv"))
             
             if self.distance_data:
@@ -744,7 +786,7 @@ class SensorIntegrationGUI:
             
         except Exception as e:
             print(f"使用signal_package儲存數據錯誤: {e}")
-            self.root.after(0, lambda: messagebox.showwarning("警告", 
+            self.post(lambda: messagebox.showwarning("警告", 
                 f"數據儲存失敗: {e}"))
 
 def main():
