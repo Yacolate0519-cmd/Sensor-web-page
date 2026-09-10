@@ -1,0 +1,15 @@
+[project]
+name = "sensor-web-page"
+version = "0.1.0"
+description = "多感測器資料整合與即時監控平台"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.1.3",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.3",
+    "psutil>=7.2.2",
+    "pyaudio>=0.2.14",
+    "pymongo>=4.18.0",
+    "pyqt5>=5.15.11",
+    "pyserial>=3.5",
+]

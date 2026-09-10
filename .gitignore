@@ -2,3 +2,4 @@ __pycache__
 Sensor_Data/
 *.csv
 *.txt
+.venv/
