@@ -31,6 +31,11 @@ def continuous_read(port, baudrate=57600):
     :param baudrate: 傳輸速率 (預設 57600)
     :return: 溫度數值 (若失敗則回傳 None)
     """
+    if not port:
+        # serial.Serial(None) 不會拋錯，會延後到 write 時才失敗，因此先擋掉
+        print("未指定 serial port")
+        return None
+
     try:
         ser = serial.Serial(port, baudrate, bytesize=8, parity='N', stopbits=1, timeout=1)
     except Exception as e:

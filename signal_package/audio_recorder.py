@@ -6,9 +6,11 @@ import threading
 import queue
 
 class AudioRecorder:
-    def __init__(self, sample_rate=22050, channels=None, chunk=1024, verbose=True):
+    def __init__(self, sample_rate=22050, channels=None, chunk=1024, verbose=True,
+                 device_index=None):
         """
         初始化音訊錄製器，自動檢測可用的輸入設備和通道數。
+        :param device_index: 指定要使用的輸入設備索引；None 表示自動挑選第一個可用設備
         """
         self.sample_rate = sample_rate
         self.chunk = chunk
@@ -39,10 +41,17 @@ class AudioRecorder:
                 dev = self.p.get_device_info_by_index(i)
                 print(f"設備 {i}: {dev['name']} (通道數: {dev['maxInputChannels']})")
 
+        # 指定設備時只嘗試該設備，避免無聲落回其他麥克風
+        if device_index is not None:
+            if device_index in input_devices:
+                input_devices = [device_index]
+            else:
+                print(f"警告：設備 {device_index} 不是可用的輸入設備，改為自動挑選")
+
         # 自動檢測通道數
         if channels is None:
-            for device_index in input_devices:
-                dev_info = self.p.get_device_info_by_index(device_index)
+            for candidate_index in input_devices:
+                dev_info = self.p.get_device_info_by_index(candidate_index)
                 max_channels = dev_info['maxInputChannels']
                 for ch in [1, 2]:
                     if ch <= max_channels:
@@ -53,14 +62,17 @@ class AudioRecorder:
                                 rate=self.sample_rate,
                                 input=True,
                                 frames_per_buffer=self.chunk,
-                                input_device_index=device_index
+                                input_device_index=candidate_index
                             )
                             self.channels = ch
-                            self.device_index = device_index
-                            print(f"成功使用設備 {device_index}，通道數：{ch}")
+                            self.device_index = candidate_index
+                            print(f"成功使用設備 {candidate_index}，通道數：{ch}")
                             return
                         except Exception:
                             continue
+            print("錯誤：所有輸入設備都無法開啟音訊串流")
+            print("可能是音訊設備被佔用或權限問題")
+            sys.exit(1)
         else:
             self.channels = channels
             self.device_index = input_devices[0]

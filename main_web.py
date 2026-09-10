@@ -4,7 +4,7 @@ import datetime
 import random
 
 # 你自己的函式庫：temp_py_package
-from temp_py_package import continuous_read  
+from temp_py_package import continuous_read, find_sensor_port
 
 app = Flask(__name__)
 
@@ -36,12 +36,18 @@ def chart_test():
     )
 
 # ---------------------------------------------------------------------
-# (1) SSE 路由：第一張圖 - 讀取 COM7 (continuous_read)
+# (1) SSE 路由：第一張圖 - 讀取溫度感測器 (continuous_read)
 @app.route('/chart_value_1') #temp sensor
 def chart_value_1():
     def generate_value_1():
-        port = 'COM7'
+        port = find_sensor_port()
         while True:
+            if port is None:
+                # 感測器未連接：推送空值並定期重試，避免中斷 SSE 串流
+                yield "data: None\n\n"
+                time.sleep(2)
+                port = find_sensor_port()
+                continue
             # 讀取你的函式庫資料
             val = continuous_read(port)
             # 存入第一張圖的歷史資料

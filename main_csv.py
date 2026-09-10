@@ -6,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import datetime
-import serial.tools.list_ports
 import pyaudio
 from rangefinder import LKIF2Device
 from rangefinder.constants import RC_OK, LKIF_ABLEMODE_AUTO
@@ -14,7 +13,7 @@ import os
 
 # 導入你的自定義模組
 from db_logger import DatabaseLogger
-from temp_py_package import continuous_read
+from temp_py_package import continuous_read, list_candidate_ports
 from signal_package import AudioRecorder, process_and_plot, plot_spectrogram, save_spectrogram_to_csv
 
 class SensorIntegrationGUI:
@@ -175,7 +174,7 @@ class SensorIntegrationGUI:
     def refresh_com_ports(self):
         """重新整理可用的COM端口"""
         try:
-            ports = [port.device for port in serial.tools.list_ports.comports()]
+            ports = [port.device for port in list_candidate_ports()]
             self.com_temp_combo['values'] = ports
             if ports:
                 self.com_temp_combo.set(ports[0])
@@ -417,7 +416,7 @@ class SensorIntegrationGUI:
                     channels=None, 
                     chunk=1024, 
                     verbose=True,
-                    #device_index=device_index  # 傳入設備索引
+                    device_index=device_index  # 傳入設備索引
                 )
                 
                 start_time = time.time()
