@@ -168,6 +168,53 @@ uv run python main_web.py
 ```
 - 啟動 Flask 伺服器，瀏覽器開啟 [http://localhost:5000/chart_test](http://localhost:5000/chart_test) 查看即時圖表。
 
+### 網頁版多感測器整合（取代 Tkinter 介面）
+```sh
+uv run python web_monitor.py              # 預設 http://127.0.0.1:5002
+uv run python web_monitor.py --port 5003  # 5002 被占用時改用其他埠
+```
+- **Windows**：直接雙擊專案資料夾裡的 `start_monitor.bat`，會啟動伺服器並自動用預設瀏覽器開啟頁面（要改埠就編輯檔案開頭的 `set PORT=5002`）。
+- 瀏覽器開啟 [http://127.0.0.1:5002](http://127.0.0.1:5002)。功能與 `main_csv.py` 相同（溫度、音訊波形／頻譜／頻譜圖、測距儀），介面改為網頁；**一律手動按「停止監測」才結束**。
+- 監測在伺服器端進行，關掉或重新整理網頁不會中斷；重新開啟頁面會自動復原目前畫面。
+- 在終端機按 `Ctrl+C` 關閉伺服器：會先停止監測、關檔、產生頻譜 CSV 並釋放硬體。
+- 圖表不依賴 CDN，實驗室電腦離線也能使用。
+- 第一次在新電腦（特別是 Windows 筆電）使用前，先跑自我檢查：`uv run python scripts/windows_selfcheck.py`（加 `--mongo` 會一併檢查 MongoDB）。
+
+#### 存檔內容（整場實驗完整保存）
+按下「開始監測」就建立 `Sensor_Data/EXP_YYYYmmdd_HHMMSS/`，資料**邊錄邊寫**（每筆都 flush，當機或斷電也只會少最後一瞬間）：
+
+| 檔案 | 內容 | 預設設定下的大小 |
+|---|---|---|
+| `audio_<id>.wav` | 全程原始音訊（16-bit，實際取樣率與聲道數） | 約 160 MB／小時（22050 Hz 單聲道；雙聲道加倍） |
+| `temperature_<id>.csv` | `Timestamp(ISO), Elapsed(s), Temperature(C), Status`；讀取失敗的列 Temperature 留空、Status 記錄原因 | 約 0.2 MB／小時 |
+| `distance_<id>.csv` | `Timestamp, Elapsed(s), Absolute(mm), Relative(mm)`（欄位與原程式相同） | 約 1.5 MB／小時（測距間隔 0.1 秒） |
+| `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
+| `experiment_<id>.json` | 參數、啟用的感測器、裝置、開始／結束時間、停止原因、各檔案筆數與錯誤紀錄 | 數 KB |
+
+- 合計約 **460 MB／小時**，8 小時約 3.7 GB。預檢時若存檔磁碟剩餘空間 < 2 GB 會警告；錄製中寫檔失敗（例如磁碟滿）會跳通知並記錄在 json，監測不會靜默中斷。
+- 只有啟用的感測器才會建檔（例如沒選 COM 埠就不會有 temperature CSV）。
+- 頻譜 CSV 以分塊方式計算，記憶體用量約 150 MB、與錄音長度無關；1 小時錄音約 6 秒產生完。若中途失敗，可事後補產生：`uv run python chunked_spectrogram.py Sensor_Data/EXP_YYYYmmdd_HHMMSS`。
+- 「頻譜圖顯示長度」只影響畫面（上限 600 秒），不影響存檔。
+
+#### MongoDB（預設關閉）
+- 設定區的「同時寫入 MongoDB」預設關閉；關閉時程式完全不會載入 pymongo 或連線，沒裝 MongoDB 的電腦也能正常使用。
+- 開啟後，按「開始監測」時會先測試連線（最多 3 秒）；連不上會顯示說明，可選擇「關閉 MongoDB 繼續」。
+- MongoDB 單筆文件上限 16 MB，約等於 50 秒音訊的頻譜；超過時會**跳通知並略過**寫入（資料仍完整在檔案中），不會靜默失敗。
+
+#### 模擬模式（沒有硬體時測試完整流程）
+```sh
+uv run python web_monitor.py --simulate temp,distance            # 溫度、測距儀用模擬資料，音訊仍用麥克風
+uv run python web_monitor.py --simulate all --simulate-faults    # 全部模擬，並定期模擬斷線／恢復
+```
+模擬資料會清楚標示：頁面頂部顯示「模擬模式」、對應卡片標「模擬」、`experiment_<id>.json` 記錄 `"simulated"`，實驗資料夾另有 `SIMULATED.txt`。**不要把模擬資料夾當成真實量測使用。**
+
+#### 常見問題排除
+- **MongoDB 連不到**：資料仍會完整存成檔案。若要使用 MongoDB：1) 安裝 MongoDB Community Server（Windows 安裝時勾選 Install as a Service）2) 執行 `services.msc` 確認服務「MongoDB」已啟動 3) 或關閉「同時寫入 MongoDB」。
+- **找不到 COM 埠**：確認 USB 轉 RS485 轉換器已接上並安裝驅動（常見晶片 CH340、FTDI、CP210x、PL2303），在「裝置管理員 → 連接埠 (COM 和 LPT)」確認出現 `COMx`；也可以在欄位直接輸入埠名。
+- **麥克風錄到全為 0／沒有音訊設備**：Windows「設定 → 隱私權與安全性 → 麥克風」開啟「麥克風存取」與「讓桌面應用程式存取麥克風」；確認輸入裝置沒被停用，並關閉占用麥克風的程式（Teams、Zoom）。macOS 則在「系統設定 → 隱私權與安全性 → 麥克風」允許終端機。
+- **LKIF2.dll 載入失敗／測距儀初始化失敗**：需要 64 位元 Python 搭配 64 位元 LKIF2.dll（專案附的版本），`CmnLib.dll`、`KeyUsbDrv.dll` 要在同一資料夾；安裝 KEYENCE 的 USB 驅動並確認裝置管理員中有控制器。macOS 無法使用測距儀。
+- **port 5002 被占用**：`uv run python web_monitor.py --port 5003`，或編輯 `start_monitor.bat` 開頭的 `set PORT=5002`。
+
 ### 4. 檢查資料庫紀錄
 ```sh
 uv run python check_db.py

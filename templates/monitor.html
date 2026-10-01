@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>感測器整合系統</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='2' fill='%234c8dff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='monitor.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>感測器整合系統</h1>
+    </div>
+    <div class="topbar-meta">
+      <span class="chip chip-sim" id="sim-chip" hidden title="這些感測器的數值是模擬產生的，不是真實量測">模擬模式</span>
+      <span class="chip" id="conn-chip" title="與伺服器的即時連線"><span class="dot" data-level="idle"></span><span id="conn-text">連線中</span></span>
+      <span class="chip" id="db-chip" title="MongoDB"><span class="dot" data-level="idle"></span><span id="db-text">資料庫</span></span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 左側：設定與控制 -->
+    <aside class="sidebar" aria-label="設定">
+      <form id="settings" autocomplete="off" novalidate>
+        <section class="group">
+          <h2>裝置</h2>
+          <label class="field">
+            <span class="field-label">溫度感測器 COM 端口</span>
+            <div class="field-row">
+              <input id="com_port" name="com_port" list="com-list" placeholder="例：COM3 或 /dev/cu.usbserial" spellcheck="false">
+              <button type="button" class="btn-icon" id="refresh-com" title="重新整理 COM" aria-label="重新整理 COM">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+            <datalist id="com-list"></datalist>
+            <span class="field-hint" id="com-hint">可從清單選擇或直接輸入</span>
+          </label>
+          <label class="field">
+            <span class="field-label">音訊設備</span>
+            <div class="field-row">
+              <select id="audio_device" name="audio_device"></select>
+              <button type="button" class="btn-icon" id="refresh-audio" title="重新整理音訊" aria-label="重新整理音訊">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          </label>
+        </section>
+
+        <section class="group">
+          <h2>音訊參數</h2>
+          <div class="grid-2">
+            <label class="field">
+              <span class="field-label">採樣率</span>
+              <div class="input-unit"><input id="sample_rate" name="sample_rate" inputmode="numeric" value="22050"><span>Hz</span></div>
+            </label>
+            <label class="field">
+              <span class="field-label">更新間隔</span>
+              <div class="input-unit"><input id="update_interval" name="update_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
+            </label>
+            <label class="field span-2">
+              <span class="field-label">頻譜圖顯示長度</span>
+              <div class="input-unit"><input id="history_duration" name="history_duration" inputmode="decimal" value="100"><span>秒</span></div>
+              <span class="field-hint">只影響畫面，不影響存檔；存檔一律保存全程</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="group">
+          <h2>測距儀</h2>
+          <label class="field">
+            <span class="field-label">反射模式</span>
+            <select id="refl_mode" name="refl_mode">
+              <option value="0">0-漫反射</option>
+              <option value="1">1-鏡面反射</option>
+            </select>
+            <span class="field-hint"><b>0-漫反射</b>：霧面、粗糙表面，如塗層、陶瓷、未拋光金屬、紙、樹脂；感測頭垂直對準待測面。</span>
+            <span class="field-hint"><b>1-鏡面反射</b>：鏡面、玻璃、拋光金屬；感測頭需傾斜安裝，讓反射光回到受光部（角度依 KEYENCE 說明書）。</span>
+            <span class="field-hint">讀值不穩或讀不到時，先確認模式是否符合表面。</span>
+          </label>
+          <label class="field">
+            <span class="field-label">測距間隔</span>
+            <div class="input-unit"><input id="distance_interval" name="distance_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
+            <span class="field-hint">程式讀取測距儀的頻率，0.1 秒＝每秒 10 筆，決定存檔資料密度</span>
+          </label>
+        </section>
+
+        <section class="group">
+          <h2>存檔</h2>
+          <label class="toggle">
+            <input type="checkbox" id="use_mongodb" name="use_mongodb">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span class="toggle-label">同時寫入 MongoDB</span>
+          </label>
+          <span class="field-hint">預設關閉。不論開關，所有感測器資料都會邊錄邊存到 Sensor_Data/EXP_時間/。</span>
+        </section>
+      </form>
+
+      <div class="controls">
+        <button type="button" class="btn btn-start" id="btn-start">開始監測</button>
+        <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止監測</button>
+      </div>
+    </aside>
+
+    <!-- 右側：數值與圖表 -->
+    <main class="content">
+      <section class="stats" aria-label="狀態顯示">
+        <article class="stat" id="card-temp">
+          <header><span class="dot" data-level="idle"></span><h3>溫度</h3><span class="sim-tag" data-sim="temp" hidden>模擬</span></header>
+          <div class="stat-value"><span class="num" id="temp-num">--</span><span class="unit" id="temp-unit">°C</span></div>
+          <p class="stat-sub" id="temp-sub">每秒更新</p>
+        </article>
+        <article class="stat" id="card-distance">
+          <header><span class="dot" data-level="idle"></span><h3>距離</h3><span class="sim-tag" data-sim="distance" hidden>模擬</span></header>
+          <div class="stat-value"><span class="num" id="dist-num">--</span><span class="unit" id="dist-unit">mm</span></div>
+          <p class="stat-sub" id="dist-sub">絕對距離</p>
+        </article>
+        <article class="stat" id="card-time">
+          <header><span class="dot" data-level="idle"></span><h3>執行時間</h3></header>
+          <div class="stat-value"><span class="num" id="time-num">0</span><span class="unit">秒</span></div>
+          <div class="progress" aria-hidden="true"><div class="progress-bar" id="time-bar"></div></div>
+          <p class="stat-sub" id="time-sub">設定 60 秒</p>
+        </article>
+        <article class="stat stat-status" id="card-status">
+          <header><span class="dot" data-level="idle"></span><h3>狀態</h3></header>
+          <div class="status-text" id="status-text">待機中</div>
+          <ul class="lamps">
+            <li id="lamp-temp"><span class="dot" data-level="idle"></span>溫度</li>
+            <li id="lamp-audio"><span class="dot" data-level="idle"></span>音訊</li>
+            <li id="lamp-distance"><span class="dot" data-level="idle"></span>距離</li>
+          </ul>
+          <p class="stat-sub" id="audio-sub">音訊：--</p>
+        </article>
+      </section>
+
+      <section class="recbar" id="recbar" aria-label="存檔狀態" hidden>
+        <div class="recbar-head">
+          <span class="dot" data-level="idle" id="rec-dot"></span>
+          <span class="recbar-title" id="rec-title">資料存檔中</span>
+          <code class="recbar-dir" id="rec-dir"></code>
+        </div>
+        <ul class="recbar-files" id="rec-files"></ul>
+      </section>
+
+      <section class="charts" aria-label="音訊監測">
+        <figure class="chart chart-spec">
+          <figcaption><h3>Spectrogram <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
+          <div class="canvas-wrap canvas-spec"><canvas id="cv-spec"></canvas></div>
+        </figure>
+        <figure class="chart">
+          <figcaption><h3>Real-Time Waveform <span class="sim-tag" data-sim="audio" hidden>模擬</span></h3><span class="chart-note" id="wave-note">單次錄音片段</span></figcaption>
+          <div class="canvas-wrap"><canvas id="cv-wave"></canvas></div>
+        </figure>
+        <figure class="chart">
+          <figcaption><h3>Real-Time Frequency Spectrum <span class="sim-tag" data-sim="audio" hidden>模擬</span></h3><span class="chart-note" id="fft-note">FFT</span></figcaption>
+          <div class="canvas-wrap"><canvas id="cv-fft"></canvas></div>
+        </figure>
+      </section>
+    </main>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <dialog id="dlg">
+    <form method="dialog" class="dlg-body">
+      <h2 id="dlg-title">警告</h2>
+      <p id="dlg-lead"></p>
+      <ul id="dlg-list"></ul>
+      <p id="dlg-question"></p>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn btn-ghost" id="dlg-cancel">取消</button>
+        <button value="ok" class="btn btn-start" id="dlg-ok">繼續監測</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="{{ url_for('static', filename='monitor.js') }}"></script>
+</body>
+</html>
