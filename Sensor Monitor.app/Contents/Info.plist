@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Sensor Monitor</string>
+  <key>CFBundleDisplayName</key><string>Sensor Monitor</string>
+  <key>CFBundleIdentifier</key><string>local.sensor-monitor.launcher</string>
+  <key>CFBundleExecutable</key><string>SensorMonitor</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Sensor Monitor 需要控制「終端機」來顯示監測服務的視窗。</string>
+</dict>
+</plist>

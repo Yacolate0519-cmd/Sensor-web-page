@@ -92,6 +92,7 @@ DEFAULT_PARAMS = {
 
 REFL_MODE_LABELS = {0: "0-漫反射", 1: "1-鏡面反射"}
 STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTERM", "sigbreak": "Ctrl+Break",
+                "sighup": "關閉終端機視窗", "console_close": "關閉主控台視窗",
                 "error": "錯誤", "timeout": "計時結束"}
 MONGO_URI = "mongodb://localhost:27017/"  # 與 db_logger.DatabaseLogger 的預設相同
 MONGO_HELP = ("找不到 MongoDB（localhost:27017）。資料仍會完整存成檔案。若要使用 MongoDB："
@@ -1422,6 +1423,7 @@ def api_stream():
 
 
 _exit_reason = {"value": "sigint"}
+_console_handlers = []
 
 
 def _make_signal_handler(reason):
@@ -1429,6 +1431,26 @@ def _make_signal_handler(reason):
         _exit_reason["value"] = reason
         raise KeyboardInterrupt
     return handler
+
+
+def _install_console_close_handler():
+    """Windows：點視窗 X（CTRL_CLOSE_EVENT）Python 不會轉成 signal，需用 SetConsoleCtrlHandler。
+    handler 在另一個執行緒執行；先停止監測並存檔再回傳（系統約數秒後會強制結束行程）。"""
+    import ctypes
+    from ctypes import wintypes
+
+    handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def handler(ctrl_type):
+        if ctrl_type in (2, 5, 6):  # CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT / CTRL_SHUTDOWN_EVENT
+            _exit_reason["value"] = "console_close"
+            service.shutdown("console_close")
+            return True
+        return False  # Ctrl+C / Ctrl+Break 仍交給 Python 原本的處理
+
+    cb = handler_type(handler)
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(cb, True)
+    _console_handlers.append(cb)  # 必須持有參照，否則 callback 會被回收
 
 
 def main():
@@ -1460,6 +1482,13 @@ def main():
     signal.signal(signal.SIGTERM, _make_signal_handler("sigterm"))
     if hasattr(signal, "SIGBREAK"):  # Windows：Ctrl+Break
         signal.signal(signal.SIGBREAK, _make_signal_handler("sigbreak"))
+    if hasattr(signal, "SIGHUP"):  # macOS/Linux：關閉 Terminal 視窗
+        signal.signal(signal.SIGHUP, _make_signal_handler("sighup"))
+    if os.name == "nt":
+        try:
+            _install_console_close_handler()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
     print(f"感測器整合系統（網頁版）: http://{args.host}:{args.port}")
     print("MongoDB 預設關閉；資料一律存到 Sensor_Data/EXP_<時間>/。按 Ctrl+C 結束。")
     if service.simulated:

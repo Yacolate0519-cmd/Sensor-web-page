@@ -1,0 +1,32 @@
+#!/bin/bash
+# Sensor Monitor.app: only locates the repo and opens Terminal running launchers/mac/start_monitor.sh.
+# Works when this .app is opened via a Finder alias / Dock (the executable path is the real one).
+SRC="${BASH_SOURCE[0]}"
+while [ -L "$SRC" ]; do
+  DIR="$(cd -P "$(dirname "$SRC")" && pwd)"; SRC="$(readlink "$SRC")"
+  case "$SRC" in /*) ;; *) SRC="$DIR/$SRC" ;; esac
+done
+APP_MACOS="$(cd -P "$(dirname "$SRC")" && pwd)"
+ROOT="$(cd -P "$APP_MACOS/../../.." && pwd)"
+LAUNCHER="$ROOT/launchers/mac/start_monitor.sh"
+
+if [ ! -f "$LAUNCHER" ]; then
+  osascript -e 'on run argv' -e 'display alert "找不到啟動程式" message ("請不要把 Sensor Monitor.app 移出專案資料夾（可以改用替身 / alias）。找不到：" & item 1 of argv)' -e 'end run' "$LAUNCHER"
+  exit 1
+fi
+
+# Already running on the default port? Just open the browser (no extra Terminal window).
+PORT="${SENSOR_MONITOR_PORT:-5002}"
+if curl -s -m 1 "http://127.0.0.1:$PORT/api/state" 2>/dev/null | grep -q '"phase"'; then
+  open "http://127.0.0.1:$PORT"
+  exit 0
+fi
+
+osascript \
+  -e 'on run argv' \
+  -e 'tell application "Terminal"' \
+  -e 'activate' \
+  -e 'do script ("SENSOR_MONITOR_PORT=" & (item 2 of argv) & " bash " & quoted form of (item 1 of argv))' \
+  -e 'end tell' \
+  -e 'end run' \
+  "$LAUNCHER" "$PORT"

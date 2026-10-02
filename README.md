@@ -168,12 +168,21 @@ uv run python main_web.py
 ```
 - 啟動 Flask 伺服器，瀏覽器開啟 [http://localhost:5000/chart_test](http://localhost:5000/chart_test) 查看即時圖表。
 
+### 一鍵啟動（不用開終端機）
+點圖示就會自動啟動伺服器，並在服務就緒後用預設瀏覽器開啟網頁。若電腦沒有 `uv` 會詢問是否自動安裝；**第一次執行需要網路**（下載 Python 與套件）。
+
+- **macOS**：雙擊專案根目錄的 `Sensor Monitor.app`（也可雙擊 `launchers/mac/start_monitor.command`）。想放桌面或 Dock：對 app 按右鍵 →「製作替身」，再把替身拖到桌面或 Dock（替身仍能找到專案資料夾；**不要**把 app 本體搬出專案資料夾）。第一次若被 Gatekeeper 擋下：對 app 按右鍵 →「打開」→ 再按「打開」。第一次可能跳出「想要控制終端機」的授權，請按允許。
+- **Windows**：第一次先雙擊 `create_desktop_shortcut.bat`，會在桌面建立「Sensor Monitor」捷徑（含圖示），之後點桌面圖示即可。也可以直接雙擊 `start_monitor.bat`。若 SmartScreen 擋下，點「其他資訊」→「仍要執行」。
+- 兩個平台的行為一致：5002 已有監測服務在跑就只開瀏覽器、不會重複啟動；5002 被別的程式占用會自動改用 5003…；要固定其他埠可設環境變數 `SENSOR_MONITOR_PORT`。
+- 伺服器跑在彈出的終端機／命令提示字元視窗裡。**關閉該視窗即停止服務；監測中請先在網頁按「停止」。** 萬一直接關閉視窗（macOS 的 SIGHUP、Windows 的關閉主控台事件），程式會先停止監測並存檔，但仍建議先按停止。
+- 圖示由 `uv run --with pillow python launchers/make_icons.py` 產生（pillow 只在這個一次性指令使用，不在專案相依套件裡）。
+
 ### 網頁版多感測器整合（取代 Tkinter 介面）
 ```sh
 uv run python web_monitor.py              # 預設 http://127.0.0.1:5002
 uv run python web_monitor.py --port 5003  # 5002 被占用時改用其他埠
 ```
-- **Windows**：直接雙擊專案資料夾裡的 `start_monitor.bat`，會啟動伺服器並自動用預設瀏覽器開啟頁面（要改埠就編輯檔案開頭的 `set PORT=5002`）。
+- **一鍵啟動**：見上一節（Windows 的 `start_monitor.bat`、macOS 的 `Sensor Monitor.app`）。
 - 瀏覽器開啟 [http://127.0.0.1:5002](http://127.0.0.1:5002)。功能與 `main_csv.py` 相同（溫度、音訊波形／頻譜／頻譜圖、測距儀），介面改為網頁；**一律手動按「停止監測」才結束**。
 - 監測在伺服器端進行，關掉或重新整理網頁不會中斷；重新開啟頁面會自動復原目前畫面。
 - 在終端機按 `Ctrl+C` 關閉伺服器：會先停止監測、關檔、產生頻譜 CSV 並釋放硬體。
