@@ -1,6 +1,7 @@
 """感測器整合系統：網頁版（取代 main_csv.py 的 Tkinter 介面）。
 
-啟動：uv run python web_monitor.py  →  http://127.0.0.1:5002
+啟動（在專案根目錄）：uv run python main.py  →  http://127.0.0.1:5002
+（也可直接 uv run python app/web_monitor.py，兩者參數相同）
 
 架構
 - MonitorService（單例）持有所有監測狀態，以 threading.Lock 保護。
@@ -31,7 +32,17 @@ import time
 import traceback
 import wave
 
-import matplotlib
+# 專案路徑：本檔在 <repo>/app/，感測器套件在 <repo>/sensors/，硬體 DLL 在 <repo>/drivers/。
+# 以檔案位置推算，不依賴目前工作目錄（從 main.py、啟動器或直接執行本檔都一樣）。
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(APP_DIR)  # 專案根目錄（Sensor_Data/ 在這裡）
+SENSORS_DIR = os.path.join(BASE_DIR, "sensors")
+DRIVERS_DIR = os.path.join(BASE_DIR, "drivers")
+for _p in (SENSORS_DIR, APP_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import matplotlib  # noqa: E402
 
 # signal_package 在匯入時就會載入 pyplot，必須先指定非互動 backend，
 # 否則 macOS 會選 macosx backend，在非主執行緒繪圖會直接崩潰。
@@ -49,9 +60,8 @@ import sim_devices  # noqa: E402
 from signal_package import AudioRecorder, process_and_plot  # noqa: E402
 from temp_py_package import continuous_read, list_candidate_ports  # noqa: E402
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
-LKIF_DLL_PATH = os.path.join(BASE_DIR, "LKIF2.dll")
+LKIF_DLL_PATH = os.path.join(DRIVERS_DIR, "LKIF2.dll")
 
 HOST = "127.0.0.1"
 PORT = 5002
@@ -995,7 +1005,7 @@ class MonitorService:
                     self._set_spec_job("error", None, str(e))
                     self.notify("warning", "頻譜 CSV 產生失敗",
                                 f"{e}\n原始音訊已保存於 {audio['name']}，可稍後執行：\n"
-                                f"uv run python chunked_spectrogram.py {recorder.rel_dir()}")
+                                f"uv run python app/chunked_spectrogram.py {recorder.rel_dir()}")
             else:
                 recorder.update(spectrogram={"status": "skipped", "reason": "音訊太短"})
             if mongo_note:
@@ -1324,7 +1334,7 @@ class MonitorService:
             if job and job.get("status") == "running" and not notified:
                 notified = True
                 print("正在產生頻譜 CSV（原始資料已安全存檔）。若要略過可再按一次 Ctrl+C，"
-                      "之後用 uv run python chunked_spectrogram.py <實驗資料夾> 補產生。")
+                      "之後用 uv run python app/chunked_spectrogram.py <實驗資料夾> 補產生。")
             time.sleep(0.1)
         with self.lock:
             logger = self.db_logger
@@ -1337,8 +1347,8 @@ class MonitorService:
 
 
 service = MonitorService()
-app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"),
-            static_folder=os.path.join(BASE_DIR, "static"))
+app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"),
+            static_folder=os.path.join(APP_DIR, "static"))
 
 
 # ---------------------------------------------------------------------------
@@ -1468,14 +1478,14 @@ def main():
         parser.error(str(e))
     service.sim_faults = bool(args.simulate_faults and service.simulated)
 
-    # 與 main_csv.py 相同以專案目錄為工作目錄（Sensor_Data 相對路徑、LKIF2.dll 位置）
+    # 以專案根目錄為工作目錄（與 main_csv.py 相同；資料路徑本身已是絕對路徑）
     os.chdir(BASE_DIR)
     # 輸出導到檔案時也即時寫出；Windows 主控台若不是 UTF-8，無法編碼的字元以 ? 取代而不是讓程式崩潰
     sys.stdout.reconfigure(line_buffering=True, errors="replace")
     sys.stderr.reconfigure(errors="replace")
     if os.name == "nt" and hasattr(os, "add_dll_directory"):
-        # LKIF2.dll 依賴同資料夾的 CmnLib.dll / KeyUsbDrv.dll
-        os.add_dll_directory(BASE_DIR)
+        # LKIF2.dll 依賴 drivers/ 裡的 CmnLib.dll / KeyUsbDrv.dll
+        os.add_dll_directory(DRIVERS_DIR)
     atexit.register(lambda: service.shutdown(_exit_reason["value"]))
     # 從背景 shell 啟動時 SIGINT 可能被繼承為「忽略」，明確恢復成 KeyboardInterrupt
     signal.signal(signal.SIGINT, _make_signal_handler("sigint"))

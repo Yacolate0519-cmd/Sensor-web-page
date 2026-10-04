@@ -1,3 +1,8 @@
+# --- 路徑設定（專案整理後舊程式移到 legacy/；感測器套件在 sensors/、db_logger 等在 app/）---
+import os as _os, sys as _sys  # noqa: E401
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_os.path.join(_ROOT, "sensors"), _os.path.join(_ROOT, "app")]
+# ---------------------------------------------------------------------------------------------
 from flask import Flask, render_template, Response
 import time
 import datetime
@@ -6,7 +11,7 @@ import random
 # 你自己的函式庫：temp_py_package
 from temp_py_package import continuous_read, find_sensor_port
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=_os.path.join(_ROOT, "app", "templates"))
 
 # 以下為四組「歷史資料」及計數器（或其他變數），每個圖表對應一組
 HISTORY_DATA_1 = []

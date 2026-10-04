@@ -3,7 +3,7 @@ rem Sensor Monitor - one-click launcher for Windows. Double-click, or use the de
 rem made by create_desktop_shortcut.bat.
 rem NOTES: keep this file CRLF (see .gitattributes). Do NOT use goto/labels or put %PATH% inside
 rem ( ) blocks: this file contains UTF-8 text, and PATH may contain parentheses.
-rem Env: SENSOR_MONITOR_PORT (default 5002). Extra arguments go to web_monitor.py.
+rem Env: SENSOR_MONITOR_PORT (default 5002). Extra arguments go to main.py.
 chcp 65001 >nul
 setlocal EnableExtensions
 title Sensor Monitor

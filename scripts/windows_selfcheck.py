@@ -19,7 +19,8 @@ import time
 import traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+DRIVERS_DIR = os.path.join(ROOT, "drivers")
+sys.path.insert(0, os.path.join(ROOT, "sensors"))
 os.chdir(ROOT)
 try:
     sys.stdout.reconfigure(errors="replace")
@@ -127,16 +128,16 @@ def check_audio():
 
 
 @check("KEYENCE 測距儀 LKIF2.dll",
-       "1) 需要 64 位元 Python 搭配 64 位元 LKIF2.dll（本專案附的版本），且 CmnLib.dll、KeyUsbDrv.dll 要在同一資料夾\n"
+       "1) 需要 64 位元 Python 搭配 64 位元 LKIF2.dll（本專案附的版本），且 CmnLib.dll、KeyUsbDrv.dll 要在同一資料夾（drivers/）\n"
        "2) 安裝 KEYENCE LK-Navigator / USB 驅動，確認裝置管理員中有 LK-G5000\n"
        "3) 「OpenDevice 失敗」表示 DLL 正常但沒有連上控制器：檢查 USB 線與控制器電源")
 def check_lkif():
     if os.name != "nt":
         return "WARN", "非 Windows 系統，無法載入 LKIF2.dll（此項僅在 Windows 有意義）"
     if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(ROOT)
+        os.add_dll_directory(DRIVERS_DIR)
     from rangefinder import LKIF2Device
-    dev = LKIF2Device(os.path.join(ROOT, "LKIF2.dll"))
+    dev = LKIF2Device(os.path.join(DRIVERS_DIR, "LKIF2.dll"))
     try:
         dev.open()
     except RuntimeError as e:
@@ -164,7 +165,7 @@ def check_disk():
     return ("OK" if free >= 2 * 1024 ** 3 else "WARN"), detail
 
 
-@check("網頁連接埠", "連接埠被占用時：關閉占用的程式，或改用其他埠，例如 uv run python web_monitor.py --port 5003")
+@check("網頁連接埠", "連接埠被占用時：關閉占用的程式，或改用其他埠，例如 uv run python main.py --port 5003")
 def check_port(port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 與 Flask/werkzeug 相同設定，避免伺服器剛關閉時 TIME_WAIT 殘留造成誤報

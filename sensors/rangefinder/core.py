@@ -8,6 +8,10 @@ from ctypes import byref, c_int, POINTER
 from .types import LKIF_FLOATVALUE_OUT
 from .constants import RC_OK, RC_CODES, FLOAT_RESULT
 
+# 預設 DLL 位置：<專案根目錄>/drivers/LKIF2.dll（本檔在 <專案根目錄>/sensors/rangefinder/）
+DEFAULT_DLL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "drivers", "LKIF2.dll")
+
 class LKIF2Device:
     """
     LKIF2Device 類別封裝了 LKIF2.dll 提供的函式，
@@ -18,12 +22,16 @@ class LKIF2Device:
         初始化裝置，載入 DLL
 
         Args:
-            dll_path (str): 若未指定，預設會從執行主程式的工作目錄中尋找 LKIF2.dll
+            dll_path (str): 若未指定，使用專案 drivers/ 資料夾裡的 LKIF2.dll
         """
         if dll_path is None:
-            dll_path = os.path.abspath("LKIF2.dll")
+            dll_path = DEFAULT_DLL_PATH
+        dll_path = os.path.abspath(dll_path)
         if not os.path.exists(dll_path):
             raise FileNotFoundError(f"❌ 找不到 DLL：{dll_path}")
+        if os.name == "nt" and hasattr(os, "add_dll_directory"):
+            # LKIF2.dll 依賴同資料夾的 CmnLib.dll / KeyUsbDrv.dll
+            os.add_dll_directory(os.path.dirname(dll_path))
 
         # 使用 WinDLL（stdcall 呼叫約定）
         self.dll = ctypes.WinDLL(dll_path)

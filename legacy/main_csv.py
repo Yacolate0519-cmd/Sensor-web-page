@@ -1,3 +1,8 @@
+# --- 路徑設定（專案整理後舊程式移到 legacy/；感測器套件在 sensors/、db_logger 等在 app/）---
+import os as _os, sys as _sys  # noqa: E401
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_os.path.join(_ROOT, "sensors"), _os.path.join(_ROOT, "app")]
+# ---------------------------------------------------------------------------------------------
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
@@ -719,7 +724,7 @@ class SensorIntegrationGUI:
             # === 建立輸出資料夾（例如在桌面下） ===
             
             # base_dir = os.path.expanduser("/SENSOR-WEB-Page/Sensor_Data")
-            base_dir = "Sensor_Data"
+            base_dir = _os.path.join(_ROOT, "Sensor_Data")  # 專案根目錄的 Sensor_Data/
             os.makedirs(base_dir, exist_ok=True)
 
             # 以時間建立子資料夾

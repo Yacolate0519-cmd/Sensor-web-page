@@ -1,3 +1,8 @@
+# --- 路徑設定（專案整理後舊程式移到 legacy/；感測器套件在 sensors/、db_logger 等在 app/）---
+import os as _os, sys as _sys  # noqa: E401
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_os.path.join(_ROOT, "sensors"), _os.path.join(_ROOT, "app")]
+# ---------------------------------------------------------------------------------------------
 import os
 import sys
 import time
@@ -6,8 +11,8 @@ import numpy as np
 from datetime import datetime
 from spectrum_py_package.spectrometer import Spectrometer
 
-BUFFER_PATH = "spectra_logs/spectra_buffer.npy"
-CSV_DIR = "spectra_logs"
+CSV_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "spectra_logs")  # legacy/spectra_logs
+BUFFER_PATH = _os.path.join(CSV_DIR, "spectra_buffer.npy")
 os.makedirs(CSV_DIR, exist_ok=True)
 
 def main():

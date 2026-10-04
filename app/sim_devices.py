@@ -1,4 +1,4 @@
-"""模擬感測器：讓沒有硬體的電腦也能測試完整流程。只在 `web_monitor.py --simulate ...` 時使用。
+"""模擬感測器：讓沒有硬體的電腦也能測試完整流程。只在 `main.py --simulate ...` 時使用。
 
 真實硬體路徑（temp_py_package.continuous_read、rangefinder.LKIF2Device、signal_package.AudioRecorder）
 完全不經過這個模組。模擬資料在網頁、experiment_<id>.json 與實驗資料夾內的 SIMULATED.txt 都會清楚標示。

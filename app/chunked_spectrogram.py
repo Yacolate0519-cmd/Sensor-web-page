@@ -11,7 +11,7 @@
 3. 再分塊讀 memmap，組出與原版相同的欄位順序，用 np.savetxt(fmt="%.6f") 寫出 CSV。
 
 指令列用法（補產生／重新產生）：
-    uv run python chunked_spectrogram.py Sensor_Data/EXP_YYYYmmdd_HHMMSS
+    uv run python app/chunked_spectrogram.py Sensor_Data/EXP_YYYYmmdd_HHMMSS   （在專案根目錄執行）
 """
 
 import datetime

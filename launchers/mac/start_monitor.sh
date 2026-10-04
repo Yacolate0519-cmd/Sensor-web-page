@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sensor Monitor launcher (macOS). Run from Terminal, or via "Sensor Monitor.app" / start_monitor.command.
 # Env: SENSOR_MONITOR_PORT (default 5002), SENSOR_MONITOR_NO_BROWSER=1 (skip opening the browser).
-# Extra arguments are passed to web_monitor.py (e.g. --simulate temp,distance).
+# Extra arguments are passed to main.py (e.g. --simulate temp,distance).
 
 # --- repo root, derived from this script's real location (not cwd) ---
 SRC="${BASH_SOURCE[0]}"
@@ -20,7 +20,7 @@ export PATH="$PATH:$HOME/.local/bin"
 say() { printf '%s\n' "$*"; }
 pause_exit() { say ""; printf '按 Enter 鍵關閉…'; { read -r _ </dev/tty; } 2>/dev/null || read -r _; exit "${1:-0}"; }
 
-# Is a web_monitor already answering on this port?
+# Is a monitor server already answering on this port?
 is_monitor() { curl -s -m 2 "http://127.0.0.1:$1/api/state" 2>/dev/null | grep -q '"phase"'; }
 # Is anything listening on this port?
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -106,7 +106,7 @@ say " 關閉此視窗即停止監測服務；監測中請先在網頁按「停�
 say " （若直接關閉視窗或按 Ctrl+C，系統會嘗試先停止監測並存檔。）"
 say "========================================================"
 say ""
-uv run python web_monitor.py --port "$PORT" "$@" &
+uv run python main.py --port "$PORT" "$@" &
 SERVER_PID=$!
 forward() { kill -INT "$SERVER_PID" 2>/dev/null; }
 trap forward INT TERM HUP

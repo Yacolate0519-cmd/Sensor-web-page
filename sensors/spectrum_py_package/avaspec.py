@@ -2,6 +2,9 @@ import sys
 import inspect
 import ctypes
 import struct
+import os
+# Windows DLL 位置：<專案根目錄>/drivers/（本檔在 <專案根目錄>/sensors/spectrum_py_package/）
+_DRIVERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "drivers")
 "---------------------------------------"
 # import globals
 from . import globals
@@ -40,13 +43,15 @@ elif 'darwin' in sys.platform: # macOS will have 'darwin'
     func = ctypes.CFUNCTYPE
 else: # Windows will have 'win32' or 'cygwin'
     import ctypes.wintypes
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(_DRIVERS_DIR)
     if (ctypes.sizeof(ctypes.c_voidp) == 8): # 64 bit
         WM_MEAS_READY = 0x8001
-        lib = ctypes.WinDLL("./avaspecx64.dll")
+        lib = ctypes.WinDLL(os.path.join(_DRIVERS_DIR, "avaspecx64.dll"))
         func = ctypes.WINFUNCTYPE
     else:
         WM_MEAS_READY = 0x0401
-        lib = ctypes.WinDLL("./avaspec.dll")
+        lib = ctypes.WinDLL(os.path.join(_DRIVERS_DIR, "avaspec.dll"))
         func = ctypes.WINFUNCTYPE
 
 class AvsIdentityType(ctypes.Structure):

@@ -2,9 +2,9 @@
 
 - If a web_monitor is already answering on the port: just open the browser.
 - If the port is used by another program: use the next free port.
-- Start web_monitor.py in this console, wait until HTTP answers (<= 30 s), then open the browser.
+- Start main.py (app/web_monitor.py) in this console, wait until HTTP answers (<= 30 s), then open the browser.
 Env: SENSOR_MONITOR_PORT (default 5002), SENSOR_MONITOR_NO_BROWSER=1.
-Extra args are passed to web_monitor.py. Also works on macOS/Linux (used for testing).
+Extra args are passed to main.py. Also works on macOS/Linux (used for testing).
 """
 import json
 import os
@@ -66,7 +66,7 @@ def main():
     print(" 關閉此視窗即停止監測服務；監測中請先在網頁按「停止」。")
     print(" （若直接關閉視窗或按 Ctrl+C，系統會嘗試先停止監測並存檔。）")
     print("=" * 56)
-    proc = subprocess.Popen([sys.executable, str(ROOT / "web_monitor.py"), "--port", str(port), *sys.argv[1:]],
+    proc = subprocess.Popen([sys.executable, str(ROOT / "main.py"), "--port", str(port), *sys.argv[1:]],
                             cwd=str(ROOT))
     ready = False
     deadline = time.time() + 30
