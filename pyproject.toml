@@ -10,6 +10,10 @@ dependencies = [
     "psutil>=7.2.2",
     "pyaudio>=0.2.14",
     "pymongo>=4.18.0",
-    "pyqt5>=5.15.11",
     "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+spectrometer = [
+    "pyqt5>=5.15.11",
 ]

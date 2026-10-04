@@ -1,4 +1,4 @@
-"""Windows launcher helper (stdlib only): called by start_monitor.bat via `uv run python`.
+"""Windows launcher helper (stdlib only): called by launchers/windows/start_monitor.ps1 (via start_monitor.bat) with `uv run python`.
 
 - If a web_monitor is already answering on the port: just open the browser.
 - If the port is used by another program: use the next free port.

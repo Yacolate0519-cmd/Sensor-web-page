@@ -126,7 +126,7 @@ source .venv/bin/activate     # macOS / Linux
 | `pyserial` | RS485/Modbus 序列埠通訊 |
 | `pyaudio` | 麥克風錄音 |
 | `psutil` | 系統資源狀態輸出（CPU／記憶體使用率） |
-| `pyqt5` | AvaSpec 光譜儀 SDK 的事件迴圈需求 |
+| `pyqt5`（選裝，`spectrometer` extra） | 只有舊的光譜儀腳本 `legacy/spectrum_main.py` 需要；網頁版不需要。需要時執行 `uv sync --extra spectrometer`。注意：新版 PyQt5-Qt5 沒有 Windows wheel，所以不列為預設依賴，否則 Windows 上 `uv sync` 會失敗 |
 
 > `bson` 不要另外從 PyPI 安裝，PyPI 上的獨立 `bson` 套件會與 `pymongo` 內建的版本衝突。
 
@@ -210,7 +210,7 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 uv run python legacy/main_csv.py          # Tkinter 多感測器整合（資料同樣存到根目錄 Sensor_Data/）
 uv run python legacy/temperture_main.py   # 單一溫度感測器
 uv run python legacy/sound_main.py        # 單一音訊（見「已知問題」）
-uv run python legacy/spectrum_main.py     # 單一光譜儀（輸出到 legacy/spectra_logs/）
+uv sync --extra spectrometer && uv run python legacy/spectrum_main.py   # 單一光譜儀，需選裝 PyQt5（輸出到 legacy/spectra_logs/）
 uv run python legacy/rangefinder_main.py  # 單一測距儀
 uv run python legacy/main_web.py          # 早期 Flask SSE 範例：http://localhost:5000/chart_test
 uv run python legacy/check_db.py          # 列出 MongoDB 最新一筆紀錄
