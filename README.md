@@ -176,7 +176,7 @@ uv run python main.py --help       # 所有參數
 |---|---|---|
 | `audio_<id>.wav` | 全程原始音訊（16-bit，實際取樣率與聲道數） | 約 160 MB／小時（22050 Hz 單聲道；雙聲道加倍） |
 | `temperature_<id>.csv` | `Timestamp(ISO), Elapsed(s), Temperature(C), Status`；讀取失敗的列 Temperature 留空、Status 記錄原因 | 約 0.2 MB／小時 |
-| `distance_<id>.csv` | `Timestamp, Elapsed(s), Absolute(mm), Relative(mm)`（欄位與原程式相同） | 約 1.5 MB／小時（測距間隔 0.1 秒） |
+| `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(mm), Relative(mm), Status`；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
 | `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
 | `experiment_<id>.json` | 參數、啟用的感測器、裝置、開始／結束時間、停止原因、各檔案筆數與錯誤紀錄 | 數 KB |
 

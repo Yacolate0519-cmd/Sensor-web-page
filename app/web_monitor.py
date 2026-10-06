@@ -799,7 +799,7 @@ class MonitorService:
                                   ["Timestamp", "Elapsed(s)", "Temperature(C)", "Status"], encoding="utf-8-sig")
             if enabled["distance"]:
                 recorder.open_csv("distance", f"distance_{experiment_id}.csv",
-                                  ["Timestamp", "Elapsed(s)", "Absolute(mm)", "Relative(mm)"], encoding="utf-8-sig")
+                                  ["Timestamp", "Elapsed(s)", "Absolute(mm)", "Relative(mm)", "Status"], encoding="utf-8-sig")
         except OSError as e:
             return {"ok": False, "errors": [f"無法建立實驗資料夾或檔案: {e}"]}, 500
 
@@ -1234,9 +1234,24 @@ class MonitorService:
         self.publish("audio", {"run_id": run_id, "wave": wave_info, "spectrum": spectrum, "spec": cols_payload})
 
     def _rangefinder_worker(self, stop_event, interval, refl_mode, recorder):
-        """對應 main_csv.start_rangefinder_monitoring；每筆有效讀值即時寫入 distance CSV。"""
+        """對應 main_csv.start_rangefinder_monitoring；每次讀取（含無效值與錯誤）都即時寫入 distance CSV。
+
+        Status 為儀器回傳的 FloatResult（VALID / +RANGEOVER / -RANGEOVER / WAITING / ALARM / INVALID），
+        讀取例外時為 "ERROR: <訊息>"；非 VALID 的列 Absolute/Relative 留空，方便事後以 Timestamp 對齊。
+        """
         device = None
-        t0 = None  # Elapsed(s) 以第一筆距離資料為 0（與原程式欄位定義相同）
+        t0 = None  # Elapsed(s) 以第一次讀取（不論是否有效）為 0
+
+        def log(status, rel=None):
+            nonlocal t0
+            now = time.time()
+            if t0 is None:
+                t0 = now
+            if rel is None:
+                recorder.write_row("distance", [now, f"{now - t0:.3f}", "", "", status])
+            else:
+                recorder.write_row("distance", [now, f"{now - t0:.3f}", f"{BASIC_REF + rel:.3f}", f"{rel:.3f}", status])
+
         try:
             if "distance" in self.simulated:
                 device = sim_devices.SimLKIF2Device(faults=self.sim_faults)
@@ -1272,10 +1287,7 @@ class MonitorService:
                     if d["FloatResult"] == "VALID":
                         rel = d["Value"]
                         absolute = BASIC_REF + rel
-                        now = time.time()
-                        if t0 is None:
-                            t0 = now
-                        recorder.write_row("distance", [now, f"{now - t0:.3f}", f"{absolute:.3f}", f"{rel:.3f}"])
+                        log("VALID", rel)
                         consecutive_failures = 0
                         if disconnected:
                             disconnected = False
@@ -1283,6 +1295,8 @@ class MonitorService:
                         self.set_sensor("distance", text=f"{absolute:.1f} mm",
                                         value=round(float(absolute), 1), level="ok")
                     else:
+                        status = d["FloatResult"]
+                        log(f"Unknown({d['RawStatus']})" if status == "Unknown" else status)
                         consecutive_failures += 1
                         if consecutive_failures >= MAX_FAILURES and not disconnected:
                             disconnected = True
@@ -1293,6 +1307,7 @@ class MonitorService:
                             self.set_sensor("distance", text="讀取失敗", value=None, level="warn")
                 except Exception as e:  # noqa: BLE001
                     print(f"測距儀讀取錯誤: {e}")
+                    log(f"ERROR: {e}")
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:
                         disconnected = True
