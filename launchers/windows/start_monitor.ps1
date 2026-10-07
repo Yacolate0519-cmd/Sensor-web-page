@@ -41,8 +41,8 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host ''
-Write-Host '同步套件 uv sync：第一次執行需要網路，可能要幾分鐘…'
-uv sync
+Write-Host '同步套件 uv sync（含光譜儀用的 PyQt5）：第一次執行需要網路，可能要幾分鐘…'
+uv sync --extra spectrometer
 if ($LASTEXITCODE -ne 0) {
     Write-Host ''
     Write-Host '[錯誤] 套件同步失敗。請檢查：'

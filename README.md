@@ -126,7 +126,7 @@ source .venv/bin/activate     # macOS / Linux
 | `pyserial` | RS485/Modbus 序列埠通訊 |
 | `pyaudio` | 麥克風錄音 |
 | `psutil` | 系統資源狀態輸出（CPU／記憶體使用率） |
-| `pyqt5`（選裝，`spectrometer` extra） | 只有舊的光譜儀腳本 `legacy/spectrum_main.py` 需要；網頁版不需要。需要時執行 `uv sync --extra spectrometer`。注意：新版 PyQt5-Qt5 沒有 Windows wheel，所以不列為預設依賴，否則 Windows 上 `uv sync` 會失敗 |
+| `pyqt5`（選裝，`spectrometer` extra） | AvaSpec 光譜儀驅動 import 時需要（網頁版與 `legacy/spectrum_main.py` 皆是）。手動執行時用 `uv sync --extra spectrometer`；Windows 一鍵啟動器已自動帶上。PyQt5-Qt5 5.15.3 起沒有 Windows wheel，所以 Windows 鎖在 5.15.2、其他平台用新版（見 `pyproject.toml`） |
 
 ### 從 Conda 遷移
 

@@ -15,4 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 spectrometer = [
     "pyqt5>=5.15.11",
+    # pyqt5-qt5 5.15.3 起沒有 Windows wheel；Windows 鎖在最後一個有 win_amd64 wheel 的 5.15.2
+    "pyqt5-qt5==5.15.2; sys_platform == 'win32'",
+    "pyqt5-qt5>=5.15.14; sys_platform != 'win32'",
 ]
