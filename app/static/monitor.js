@@ -575,6 +575,74 @@
   // ------------------------------------------------------------------
   function setDot(el, level) { el.querySelector(".dot").dataset.level = level; }
 
+  // ------------------------------------------------------------------
+  // 感測器狀態面板（左側欄）：燈號、失敗原因分類、排查建議、最後正常時間、連續失敗次數
+  // 原因代碼與 app/web_monitor.py 的 R_* / REASON_LABELS 一致；列由 monitor.html 的 data-sensor 決定，
+  // 伺服器 sensors 缺少該 key 時（例如光譜儀尚未整合）顯示「未接入」。
+  // ------------------------------------------------------------------
+  const REASON_LABELS = {
+    idle: "待機", init: "初始化中", ok: "正常", stopped: "已停止",
+    driver: "驅動／韌體問題", not_found: "找不到裝置", busy: "Port 衝突／被佔用",
+    no_data: "數據收不進來", wiring: "接線／訊號異常", out_of_range: "超出量程",
+    disabled: "未選擇／未啟用", error: "其他錯誤",
+  };
+  const REASON_TONES = {
+    ok: "ok",
+    busy: "warn", no_data: "warn", wiring: "warn", out_of_range: "warn",
+    driver: "error", not_found: "error", error: "error",
+    idle: "neutral", init: "neutral", disabled: "neutral", stopped: "neutral",
+  };
+  let serverOffsetMs = 0; // 伺服器時間 - 本機時間，用 server_time 對時避免本機時鐘差
+
+  function fmtAgo(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    if (sec < 60) return `${sec} 秒前`;
+    if (sec < 3600) return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒前`;
+    return `${Math.floor(sec / 3600)} 小時 ${Math.floor((sec % 3600) / 60)} 分前`;
+  }
+
+  function updateSensorMeta(row) {
+    const meta = row.querySelector(".sr-meta");
+    meta.hidden = row.querySelector(".sr-last").hidden && row.querySelector(".sr-fails").hidden;
+  }
+
+  function renderSensorAgo() {
+    if (!state) return;
+    const now = (Date.now() + serverOffsetMs) / 1000;
+    document.querySelectorAll("#sensor-panel .sensor-row").forEach((row) => {
+      const s = state.sensors[row.dataset.sensor];
+      const el = row.querySelector(".sr-last");
+      el.hidden = !(s && s.last_ok);
+      if (!el.hidden) el.textContent = `最後正常 ${fmtAgo(now - s.last_ok)}`;
+      updateSensorMeta(row);
+    });
+  }
+
+  function renderSensorPanel(s) {
+    if (s.server_time) serverOffsetMs = s.server_time * 1000 - Date.now();
+    document.querySelectorAll("#sensor-panel .sensor-row").forEach((row) => {
+      const sensor = s.sensors[row.dataset.sensor];
+      const badge = row.querySelector(".sr-badge");
+      const detail = row.querySelector(".sr-detail");
+      const fails = row.querySelector(".sr-fails");
+      if (!sensor) { // 尚未整合的感測器
+        row.querySelector(".dot").dataset.level = "off";
+        badge.textContent = "未接入"; badge.dataset.tone = "neutral";
+        detail.hidden = true; fails.hidden = true;
+        return;
+      }
+      const reason = sensor.reason || "idle";
+      row.querySelector(".dot").dataset.level = sensor.level;
+      badge.textContent = REASON_LABELS[reason] || reason;
+      badge.dataset.tone = REASON_TONES[reason] || "neutral";
+      detail.textContent = sensor.detail || "";
+      detail.hidden = !sensor.detail;
+      fails.hidden = !sensor.fail_count;
+      fails.textContent = `連續失敗 ${sensor.fail_count} 次`;
+    });
+    renderSensorAgo();
+  }
+
   function renderTime(elapsedInt, elapsed, duration, phase) {
     $("time-num").textContent = String(elapsedInt);
     const bar = $("time-bar"), prog = bar.parentElement;
@@ -619,6 +687,7 @@
     setDot($("lamp-audio"), s.sensors.audio.level);
     setDot($("lamp-distance"), s.sensors.distance.level);
     $("audio-sub").textContent = `音訊：${s.sensors.audio.text}`;
+    renderSensorPanel(s);
 
     $("btn-start").disabled = locked || busy;
     $("btn-stop").disabled = !running;
@@ -852,6 +921,7 @@
   $("btn-stop").addEventListener("click", onStop);
   $("refresh-com").addEventListener("click", () => loadCom(false));
   $("refresh-audio").addEventListener("click", () => loadAudio(true));
+  setInterval(renderSensorAgo, 1000); // 狀態面板的「最後正常 N 秒前」每秒更新（含停止後）
 
   (async () => {
     connect();

@@ -99,6 +99,31 @@
         <button type="button" class="btn btn-start" id="btn-start">開始監測</button>
         <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止監測</button>
       </div>
+
+      <!-- 感測器狀態：每個感測器一列（key 對應 /api/state 的 sensors；光譜儀尚未整合，先預留「未接入」） -->
+      <section class="group sensor-panel" id="sensor-panel" aria-label="感測器狀態">
+        <h2>感測器狀態</h2>
+        <div class="sensor-row" data-sensor="temp">
+          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">溫度</span><span class="sim-tag" data-sim="temp" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+          <div class="sr-detail" hidden></div>
+        </div>
+        <div class="sensor-row" data-sensor="audio">
+          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">音訊</span><span class="sim-tag" data-sim="audio" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+          <div class="sr-detail" hidden></div>
+        </div>
+        <div class="sensor-row" data-sensor="distance">
+          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">距離</span><span class="sim-tag" data-sim="distance" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+          <div class="sr-detail" hidden></div>
+        </div>
+        <div class="sensor-row" data-sensor="spectrometer">
+          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">光譜儀</span><span class="sr-badge" data-tone="neutral">未接入</span></div>
+          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+          <div class="sr-detail" hidden></div>
+        </div>
+      </section>
     </aside>
 
     <!-- 右側：數值與圖表 -->

@@ -24,6 +24,7 @@ Sensor-web-page/
 ├── create_desktop_shortcut.bat# Windows：在桌面建立捷徑
 ├── README.md
 ├── Sensor_Data/               # 實驗資料（EXP_<時間>/，不進 git）
+├── logs/                      # 伺服器 log（server_YYYYMMDD.log，不進 git）
 ├── app/                       # 網頁版監控服務
 │   ├── web_monitor.py         #   Flask 伺服器與監測邏輯（main.py 呼叫它）
 │   ├── templates/             #   前端 HTML（monitor.html 等）
@@ -174,6 +175,7 @@ uv run python main.py --help       # 所有參數
 | `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(mm), Relative(mm), Status`；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
 | `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
 | `experiment_<id>.json` | 參數、啟用的感測器、裝置、開始／結束時間、停止原因、各檔案筆數與錯誤紀錄 | 數 KB |
+| `experiment_<id>.log` | 這次實驗的完整 log（開始參數、各感測器狀態變化與失敗原因、恢復、通知、停止與存檔摘要），每行即時寫入；伺服器層級的 log 另存在 `logs/server_YYYYMMDD.log` | 數十 KB |
 
 - 合計約 **460 MB／小時**，8 小時約 3.7 GB。預檢時若存檔磁碟剩餘空間 < 2 GB 會警告；錄製中寫檔失敗（例如磁碟滿）會跳通知並記錄在 json，監測不會靜默中斷。
 - 只有啟用的感測器才會建檔（例如沒選 COM 埠就不會有 temperature CSV）。

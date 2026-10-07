@@ -231,6 +231,27 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .recbar-files .fstat { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .recbar-files .ferr { color: var(--err); }
 
+/* ---------- 感測器狀態面板（左側欄，開始/停止按鈕下方） ---------- */
+.sensor-panel { margin-top: 16px; padding: 14px 0 0; border-top: 1px solid var(--border); border-bottom: 0; gap: 0; }
+.sensor-panel h2 { margin-bottom: 4px; }
+.sensor-row { display: flex; flex-direction: column; gap: 3px; padding: 8px 0; min-width: 0; font-size: 12.5px; }
+.sensor-row + .sensor-row { border-top: 1px solid var(--border); }
+.sr-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sr-name { font-weight: 500; color: var(--text); white-space: nowrap; }
+.sr-head .sim-tag { margin-left: 0; flex: none; }
+.sr-badge {
+  margin-left: auto; flex: none; padding: 1px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  color: var(--text-2); background: color-mix(in srgb, var(--off) 25%, transparent);
+  border: 1px solid color-mix(in srgb, var(--off) 55%, transparent);
+}
+.sr-badge[data-tone="ok"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.sr-badge[data-tone="warn"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.sr-badge[data-tone="error"] { color: var(--err); background: color-mix(in srgb, var(--err) 14%, transparent); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
+.sr-meta { display: flex; justify-content: space-between; gap: 8px; padding-left: 16px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sr-fails { color: var(--err); margin-left: auto; }
+.sr-meta[hidden], .sr-detail[hidden], .sr-last[hidden], .sr-fails[hidden] { display: none; }
+.sr-detail { padding-left: 16px; font-size: 12px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+
 /* ---------- 數值卡片 ---------- */
 .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .stat {

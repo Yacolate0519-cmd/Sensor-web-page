@@ -11,6 +11,11 @@
 - 監測在伺服器端持續進行，頁面重整後由 /api/state 與 /api/spectrogram 復原畫面。
 - 存檔：開始時就建立 Sensor_Data/EXP_<id>/，所有感測器資料邊錄邊寫（WAV / CSV 每筆 flush），
   停止時再由完整 WAV 分塊產生 spectrogram_<id>.csv（chunked_spectrogram.py，格式與原版相同）。
+- Log（標準 logging，每行 flush，終端機也看得到）：
+  logs/server_YYYYMMDD.log      伺服器 log（啟動/關閉、預檢、開始/停止、未處理例外，以及實驗期間的所有事件）
+  Sensor_Data/EXP_<id>/experiment_<id>.log   該次實驗的 log（開始時掛上 handler、存檔完成後移除）
+  格式：`2026-10-07 14:31:05.123 [INFO ] 溫度     訊息`。感測器只在「狀態/原因改變」時寫一行，
+  持續失敗每 LOG_SUMMARY_S 秒補一行摘要，恢復時寫失敗持續秒數與次數，不會每筆失敗都寫。
 """
 
 import argparse
@@ -20,6 +25,7 @@ import collections
 import csv
 import datetime
 import json
+import logging
 import math
 import os
 import queue
@@ -29,7 +35,6 @@ import signal
 import sys
 import threading
 import time
-import traceback
 import wave
 
 # 專案路徑：本檔在 <repo>/app/，感測器套件在 <repo>/sensors/，硬體 DLL 在 <repo>/drivers/。
@@ -58,9 +63,11 @@ from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK  # noqa: E402
 import chunked_spectrogram  # noqa: E402
 import sim_devices  # noqa: E402
 from signal_package import AudioRecorder  # noqa: E402
-from temp_py_package import continuous_read, list_candidate_ports  # noqa: E402
+from temp_py_package import list_candidate_ports  # noqa: E402
+from temp_py_package.reader import check_port_present, read_temperature_diag
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 LKIF_DLL_PATH = os.path.join(DRIVERS_DIR, "LKIF2.dll")
 
 HOST = "127.0.0.1"
@@ -71,6 +78,7 @@ NFFT = 256
 NOVERLAP = 128
 HOP = NFFT - NOVERLAP
 MAX_FAILURES = 10
+LOG_SUMMARY_S = 60              # 同一原因持續失敗時，log 每隔幾秒補一行摘要
 SERIES_MAX_POINTS = 2000       # 溫度／距離歷史送給前端時降採樣的點數上限
 SSE_QUEUE_MAX = 300
 MAX_DISPLAY_SECONDS = 600       # 頻譜圖顯示長度上限（只影響記憶體中的顯示緩衝）
@@ -104,6 +112,106 @@ STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTER
                 "sighup": "關閉終端機視窗", "console_close": "關閉主控台視窗",
                 "error": "錯誤", "timeout": "計時結束"}
 
+# 感測器狀態的原因代碼（前端 monitor.js 的 REASON_LABELS 要與此一致）
+R_IDLE, R_INIT, R_OK, R_DISABLED = "idle", "init", "ok", "disabled"
+R_DRIVER, R_NOT_FOUND, R_BUSY = "driver", "not_found", "busy"
+R_NO_DATA, R_WIRING, R_OUT_OF_RANGE = "no_data", "wiring", "out_of_range"
+R_ERROR, R_STOPPED = "error", "stopped"
+# 這些原因不算「失敗」，set_sensor 不會累加 fail_count
+NON_FAILURE_REASONS = {R_IDLE, R_INIT, R_OK, R_DISABLED, R_STOPPED}
+REASON_LABELS = {
+    R_DRIVER: "驅動／韌體問題", R_NOT_FOUND: "找不到裝置", R_BUSY: "Port 衝突／被佔用",
+    R_NO_DATA: "數據收不進來", R_WIRING: "接線／訊號異常", R_OUT_OF_RANGE: "超出量程",
+    R_DISABLED: "未選擇／未啟用", R_ERROR: "其他錯誤",
+    R_IDLE: "待機", R_INIT: "初始化中", R_OK: "正常", R_STOPPED: "已停止",
+}
+# 感測器 key → 中文名（log 的來源欄、預檢說明用）。整合光譜儀時在這裡加 "spectrometer": "光譜儀"，
+# 並在 self.sensors / _reset_sensor_display 加同名 key，前端狀態面板就會從「未接入」變成實際狀態。
+SENSOR_NAMES = {"temp": "溫度", "audio": "音訊", "distance": "距離"}
+SRC_SYSTEM = "系統"
+
+
+# ---------------------------------------------------------------------------
+# Log：標準 logging。來源欄放在 record.src（系統/溫度/音訊/距離…）
+# ---------------------------------------------------------------------------
+log = logging.getLogger("sensor_monitor")
+INFO, WARN, ERROR = logging.INFO, logging.WARNING, logging.ERROR
+
+
+def slog(level, src, msg, exc=None):
+    """寫一行 log；exc 為例外物件時附上完整 traceback。"""
+    log.log(level, msg, extra={"src": src}, exc_info=exc)
+
+
+LOG_LEVEL_NAMES = {"WARNING": "WARN", "CRITICAL": "ERROR"}
+
+
+def _display_width(text):
+    return sum(2 if ord(c) >= 0x2E80 else 1 for c in text)
+
+
+class LogFormatter(logging.Formatter):
+    """2026-10-07 14:31:05.123 [INFO ] 溫度     訊息（來源欄以顯示寬度補齊到 9 欄）。"""
+
+    def format(self, record):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
+        level = LOG_LEVEL_NAMES.get(record.levelname, record.levelname)
+        src = getattr(record, "src", SRC_SYSTEM)
+        text = (f"{ts}.{int(record.msecs):03d} [{level:<5}] {src}"
+                f"{' ' * max(1, 9 - _display_width(src))}{record.getMessage()}")
+        if record.exc_info:
+            text += "\n" + self.formatException(record.exc_info)
+        return text
+
+
+class DailyFileHandler(logging.Handler):
+    """logs/server_YYYYMMDD.log：附加寫入、每行 flush、跨日自動換檔。"""
+
+    def __init__(self, directory):
+        super().__init__()
+        self.directory = directory
+        self._day = None
+        self._file = None
+
+    def emit(self, record):
+        try:
+            day = time.strftime("%Y%m%d")
+            if day != self._day:
+                if self._file:
+                    self._file.close()
+                os.makedirs(self.directory, exist_ok=True)
+                self._file = open(os.path.join(self.directory, f"server_{day}.log"), "a",  # noqa: SIM115  長期持有
+                                  encoding="utf-8-sig")
+                self._day = day
+            self._file.write(self.format(record) + "\n")
+            self._file.flush()
+        except Exception:  # noqa: BLE001
+            self.handleError(record)
+
+    def close(self):
+        with self.lock:
+            if self._file:
+                self._file.close()
+                self._file = None
+        super().close()
+
+
+_logging_ready = False
+
+
+def setup_logging():
+    """伺服器 log（檔案）＋終端機輸出；實驗 log 由 ExperimentRecorder.attach_log 另外掛上。可重複呼叫。"""
+    global _logging_ready
+    if _logging_ready:
+        return
+    _logging_ready = True
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    fmt = LogFormatter()
+    for h in (DailyFileHandler(LOG_DIR), logging.StreamHandler(sys.stdout)):
+        h.setFormatter(fmt)
+        log.addHandler(h)
+
 
 # ---------------------------------------------------------------------------
 # 裝置列舉
@@ -117,7 +225,7 @@ def list_com_ports():
         ]
         return {"ports": ports, "default": ports[0]["device"] if ports else "", "error": None}
     except Exception as e:  # noqa: BLE001
-        print(f"刷新COM端口錯誤: {e}")
+        slog(ERROR, SRC_SYSTEM, f"刷新COM端口錯誤: {e}", e)
         return {"ports": [], "default": "", "error": str(e)}
 
 
@@ -144,7 +252,7 @@ def list_audio_devices():
                     "default": devices[0]["display_name"]}
         return {"devices": [], "status": "none", "placeholder": AUDIO_NONE, "default": AUDIO_NONE}
     except BaseException as e:  # noqa: BLE001  PyAudio 初始化失敗也不可拖垮伺服器
-        print(f"刷新音訊設備錯誤: {e}")
+        slog(ERROR, SRC_SYSTEM, f"刷新音訊設備錯誤: {e}", e)
         return {"devices": [], "status": "error", "placeholder": AUDIO_FAILED, "default": AUDIO_FAILED}
 
 
@@ -156,6 +264,52 @@ def parse_audio_device_index(selected):
         return int(str(selected).split(":")[0])
     except (TypeError, ValueError):
         return None
+
+
+def classify_rangefinder_error(exc):
+    """把 LKIF2Device 建構/open 的例外分類成 (reason, detail)。FileNotFoundError 是 OSError 子類，要先判斷。"""
+    if isinstance(exc, FileNotFoundError):
+        return R_DRIVER, "找不到 drivers/LKIF2.dll：確認 drivers 資料夾內有 LKIF2.dll、CmnLib.dll、KeyUsbDrv.dll"
+    if isinstance(exc, AttributeError):
+        return R_DRIVER, "此系統不是 Windows，無法載入 KEYENCE DLL"
+    if isinstance(exc, OSError):
+        return R_DRIVER, "DLL 載入失敗：缺少相依 DLL（CmnLib.dll／KeyUsbDrv.dll）或 Python 與 DLL 位元（32/64）不符"
+    if isinstance(exc, RuntimeError) and "OpenDevice" in str(exc):
+        return R_NOT_FOUND, "LK-G5000 未連線：檢查 USB 線、控制器電源、KEYENCE USB 驅動"
+    return R_ERROR, f"測距儀發生未預期的錯誤：{exc}"
+
+
+# 測距儀 FloatResult 非 VALID 時的分類（Unknown/INVALID 另外處理）
+RANGEFINDER_STATUS_DIAG = {
+    "WAITING": (R_NO_DATA, "測距儀等待資料中：尚未取得量測值，確認控制器為量測模式且取樣已開始"),
+    "+RANGEOVER": (R_OUT_OF_RANGE, "目標超出量測範圍（過遠）：調整感測頭與目標的距離"),
+    "-RANGEOVER": (R_OUT_OF_RANGE, "目標超出量測範圍（過近）：調整感測頭與目標的距離"),
+    "ALARM": (R_WIRING, "量測警報：受光量不足或感測頭接線異常，檢查感測頭連接與目標表面"),
+}
+
+
+def diagnose_audio_device(index):
+    """AudioRecorder 因 sys.exit(1) 失敗後，直接用 pyaudio 查出原因，回傳 (reason, detail)。"""
+    if index is None:
+        return R_NOT_FOUND, "未選擇有效的音訊輸入設備"
+    try:
+        p = pyaudio.PyAudio()
+    except BaseException as e:  # noqa: BLE001
+        return R_DRIVER, f"音訊系統（PortAudio/PyAudio）初始化失敗：確認音訊驅動與 PyAudio 已正確安裝（{e}）"
+    try:
+        inputs = []
+        for i in range(p.get_device_count()):
+            if p.get_device_info_by_index(i)["maxInputChannels"] > 0:
+                inputs.append(i)
+        if not inputs:
+            return R_NOT_FOUND, "系統找不到任何音訊輸入設備：確認麥克風已插上且未被系統停用"
+        if index not in inputs:
+            return R_NOT_FOUND, f"指定的設備 {index} 不存在或不是輸入設備：麥克風可能已被拔除，請重新整理設備清單"
+        return R_BUSY, "設備無法開啟：可能被其他程式佔用，或未授予麥克風權限"
+    except BaseException as e:  # noqa: BLE001
+        return R_ERROR, f"查詢音訊設備時發生錯誤：{e}"
+    finally:
+        p.terminate()
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +382,7 @@ class ExperimentRecorder:
     - audio_<id>.wav：wave 每次 writeframes 都會回寫 header，因此即使行程被強制結束，檔頭仍正確。
     - temperature_<id>.csv / distance_<id>.csv：csv.writer + flush。
     - experiment_<id>.json：開始時寫入，結束時補上結束資訊（以暫存檔 + os.replace 原子更新）。
+    - experiment_<id>.log：attach_log() 掛上 logging handler，這次實驗期間的所有 log 都寫進來（每行 flush）。
     """
 
     def __init__(self, experiment_id, info):
@@ -239,6 +394,7 @@ class ExperimentRecorder:
         self.files = {}     # key -> 統計（name、rows/frames、bytes…）
         self._handles = {}  # key -> (file, writer, kind)
         self.errors = []
+        self._log_handler = None
         self.on_write_error = None  # callback(key, exc)：寫檔失敗（磁碟滿等）時通知，不讓 worker 靜默死掉
         self.write_json()
 
@@ -247,7 +403,7 @@ class ExperimentRecorder:
             st = self.files.get(key)
             first = st is not None and not st.get("write_error")
         if first:
-            print(f"寫入 {key} 失敗: {exc}（之後同一檔案的失敗不再逐筆列印）")
+            slog(ERROR, SRC_SYSTEM, f"寫入 {key} 失敗: {exc}（之後同一檔案的失敗不再逐筆記錄）", exc)
         with self.lock:
             if st is not None:
                 st["write_error"] = str(exc)
@@ -274,9 +430,11 @@ class ExperimentRecorder:
         f.flush()
         with self.lock:
             self._handles[key] = (f, w, "csv")
-            self.files[key] = {"name": filename, "kind": "csv", "rows": 0, "bytes": f.tell(), "closed": False}
+            self.files[key] = {"name": filename, "kind": "csv", "rows": 0, "fail_rows": 0,
+                               "bytes": f.tell(), "closed": False}
 
-    def write_row(self, key, row):
+    def write_row(self, key, row, ok=True):
+        """ok=False 代表這一列是失敗讀取，只用來統計失敗筆數（存檔摘要用）。"""
         with self.lock:
             h = self._handles.get(key)
             if not h:
@@ -291,6 +449,8 @@ class ExperimentRecorder:
                 err = None
                 st = self.files[key]
                 st["rows"] += 1
+                if not ok:
+                    st["fail_rows"] += 1
                 st["bytes"] = f.tell()
         if err is not None:
             self._write_failed(key, err)
@@ -355,7 +515,7 @@ class ExperimentRecorder:
             try:
                 self.close(key)
             except Exception as e:  # noqa: BLE001
-                print(f"關閉 {key} 檔案錯誤: {e}")
+                slog(ERROR, SRC_SYSTEM, f"關閉 {key} 檔案錯誤: {e}", e)
 
     def add_file(self, key, name, **stats):
         """登記非串流檔案（例如停止後產生的 spectrogram CSV）。"""
@@ -363,6 +523,37 @@ class ExperimentRecorder:
             p = self.path(name)
             self.files[key] = {"name": name, "kind": "file", "closed": True,
                                "bytes": os.path.getsize(p) if os.path.exists(p) else 0, **stats}
+
+    # ---- 實驗 log ----
+    def attach_log(self):
+        """建立 experiment_<id>.log 並把 handler 掛到 logger；之後所有 log（含伺服器層級事件）同步寫入。"""
+        name = f"experiment_{self.experiment_id}.log"
+        h = logging.FileHandler(self.path(name), mode="a", encoding="utf-8-sig")
+        h.setFormatter(LogFormatter())
+        log.addHandler(h)
+        self._log_handler = h
+        with self.lock:
+            self.files["log"] = {"name": name, "kind": "log", "bytes": 0, "closed": False}
+        self.write_json()
+
+    def close_log(self):
+        """移除並關閉實驗 log handler，登記最終大小（存檔流程最後一步）。"""
+        h, self._log_handler = self._log_handler, None
+        if h is None:
+            return
+        log.removeHandler(h)
+        h.close()
+        with self.lock:
+            st = self.files["log"]
+            st["closed"] = True
+            try:
+                st["bytes"] = os.path.getsize(self.path(st["name"]))
+            except OSError:
+                pass
+        try:
+            self.write_json()
+        except OSError:
+            pass
 
     def add_error(self, msg):
         with self.lock:
@@ -376,6 +567,12 @@ class ExperimentRecorder:
 
     def summary(self):
         with self.lock:
+            lg = self.files.get("log")
+            if lg and not lg["closed"]:  # log 還在寫：大小即時更新，讓前端存檔列看得到
+                try:
+                    lg["bytes"] = os.path.getsize(self.path(lg["name"]))
+                except OSError:
+                    pass
             return {"experiment_id": self.experiment_id, "dir": self.rel_dir(),
                     "files": [dict(v, key=k) for k, v in self.files.items()]}
 
@@ -419,6 +616,9 @@ class MonitorService:
         self.run_id = 0
 
         self.sensors = {}
+        self.preflight_reasons = {}  # 最近一次預檢各感測器的 {reason, detail}
+        self._track = {}        # 感測器 key → log 用的狀態追蹤（節流與恢復訊息）
+        self._pf_shown = set()  # 目前由預檢結果佔著狀態面板的感測器
         self._reset_sensor_display()
 
         # 模擬模式（--simulate）：只有列出的感測器改用 sim_devices，其餘仍走真實硬體
@@ -483,14 +683,15 @@ class MonitorService:
                 except queue.Full:
                     pass
 
-    def notify(self, level, title, message):
-        """取代 messagebox：level = info | warning | error | success。"""
+    def notify(self, level, title, message, src=SRC_SYSTEM):
+        """取代 messagebox：level = info | warning | error | success。同時寫進 log（src 為來源欄）。"""
         with self.lock:
             self.notice_seq += 1
             notice = {"id": self.notice_seq, "level": level, "title": title,
                       "message": message, "time": time.time()}
             self.notices.append(notice)
-        print(f"[{level}] {title}: {message}")
+        slog({"warning": WARN, "error": ERROR}.get(level, INFO), src,
+             f"網頁通知 [{title}] {message.replace(chr(10), ' / ')}")
         self.publish("toast", notice)
 
     def push_state(self):
@@ -521,13 +722,66 @@ class MonitorService:
 
     # ---------------- 狀態 ----------------
     def _reset_sensor_display(self):
+        # 狀態面板的資料來源：每個 key 一個感測器（front end 的 SENSOR_ROWS 以 key 對應；缺少的 key 顯示「未接入」）
         self.sensors = {
             "temp": {"text": "-- °C", "value": None, "level": "idle"},
             "distance": {"text": "-- mm", "value": None, "level": "idle"},
             "audio": {"text": "--", "level": "idle"},
         }
+        for s in self.sensors.values():
+            s.update(reason=R_IDLE, detail="", last_ok=None, fail_count=0)
+        self._track = {}
+        self._pf_shown = set()
 
-    def set_sensor(self, key, text=None, value=None, level=None, push=True):
+    def _track_sensor(self, key, s):
+        """依 set_sensor 後的狀態寫 log（呼叫時已持有 self.lock）。
+
+        節流：只在 (原因, 等級) 改變時寫一行「狀態變化」；同一原因持續失敗每 LOG_SUMMARY_S 秒補一行摘要；
+        回到正常時寫失敗持續秒數與期間失敗次數。ok 狀態下重複呼叫（音訊每秒刷新 last_ok）不寫。
+        """
+        now = time.time()
+        t = self._track.setdefault(key, {"reason": None, "level": None, "desc": "初始化中", "fail_start": None,
+                                         "fails": 0, "next_summary": 0.0, "last_exc": None})
+        name = SENSOR_NAMES.get(key, key)
+        reason, level = s["reason"], s["level"]
+        if reason in NON_FAILURE_REASONS:
+            if reason == R_OK:
+                if t["fail_start"] is not None:
+                    slog(INFO, name, f"恢復正常（失敗持續 {now - t['fail_start']:.1f} 秒，期間失敗 {t['fails']} 次）")
+                    t["fail_start"], t["fails"], t["last_exc"] = None, 0, None
+                elif t["reason"] != R_OK:
+                    slog(INFO, name, f"狀態：正常（原先為{t['desc']}）")
+            t["desc"] = REASON_LABELS.get(reason, reason)
+        else:
+            t["fails"] = s["fail_count"]
+            if t["fail_start"] is None:
+                t["fail_start"] = now
+            desc = REASON_LABELS.get(reason, reason) + ("（已判定斷線）" if level == "error" and t["level"] == "warn" else "")
+            if (reason, level) != (t["reason"], t["level"]):
+                slog(ERROR if level == "error" or reason in (R_DRIVER, R_NOT_FOUND, R_ERROR) else WARN, name,
+                     f"狀態變化：{t['desc']} → {desc} [{reason}] {s['detail']}")
+                t["desc"], t["next_summary"] = desc, now + LOG_SUMMARY_S
+            elif now >= t["next_summary"]:
+                slog(WARN, name, f"仍在失敗 [{reason}]：累計 {t['fails']} 次，已持續 {now - t['fail_start']:.0f} 秒；{s['detail']}")
+                t["next_summary"] = now + LOG_SUMMARY_S
+        t["reason"], t["level"] = reason, level
+
+    def _log_exception_once(self, key, exc, what):
+        """讀取迴圈的例外：同一種例外訊息只寫一次完整 traceback（恢復後重新計算），避免逐筆洗版。"""
+        sig = f"{type(exc).__name__}: {exc}"
+        with self.lock:
+            t = self._track.setdefault(key, {"reason": None, "level": None, "desc": "初始化中", "fail_start": None,
+                                             "fails": 0, "next_summary": 0.0, "last_exc": None})
+            if t["last_exc"] == sig:
+                return
+            t["last_exc"] = sig
+        slog(ERROR, SENSOR_NAMES.get(key, key), f"{what}: {sig}", exc)
+
+    def set_sensor(self, key, text=None, value=None, level=None, push=True, reason=None, detail=None):
+        """更新單一感測器。level=="ok" 自動視為正常（reason=ok、記錄 last_ok、清除失敗計數）；
+        否則帶 reason 的呼叫會記錄原因／說明，並在 reason 屬於失敗類時 fail_count+1
+        （idle/init/ok/disabled/stopped 不算失敗）。不帶 reason 的呼叫不動這幾個欄位。
+        狀態改變時順便寫 log（_track_sensor）。"""
         with self.lock:
             s = self.sensors[key]
             if text is not None:
@@ -535,6 +789,17 @@ class MonitorService:
             s["value"] = value if key != "audio" else s.get("value")
             if level is not None:
                 s["level"] = level
+            if level == "ok":
+                s.update(reason=R_OK, detail="", last_ok=time.time(), fail_count=0)
+                self._pf_shown.discard(key)
+            elif reason is not None:
+                s["reason"] = reason
+                s["detail"] = detail or ""
+                if reason not in NON_FAILURE_REASONS:
+                    s["fail_count"] += 1
+                self._pf_shown.discard(key)
+            if level == "ok" or reason is not None:
+                self._track_sensor(key, s)
         if push:
             self.push_state()
 
@@ -595,7 +860,7 @@ class MonitorService:
 
     # ---------------- 預檢 ----------------
     def check_rangefinder(self):
-        """對應 main_csv.start_monitoring 的測距儀檢查。"""
+        """對應 main_csv.start_monitoring 的測距儀檢查。回傳 (ok, 警告訊息, (reason, detail))。"""
         try:
             dev = LKIF2Device(LKIF_DLL_PATH)
             rc = dev.open()
@@ -604,11 +869,12 @@ class MonitorService:
                     dev.close()
                 except Exception:  # noqa: BLE001
                     pass
-                return False, "• 測距儀連接失敗，距離監測將被停用"
+                return (False, "• 測距儀連接失敗，距離監測將被停用",
+                        (R_NOT_FOUND, "LK-G5000 未連線：檢查 USB 線、控制器電源、KEYENCE USB 驅動"))
             dev.close()
-            return True, None
-        except BaseException:  # noqa: BLE001  macOS 上 ctypes.WinDLL 不存在 → AttributeError
-            return False, "• 測距儀初始化失敗，距離監測將被停用"
+            return True, None, (R_OK, "")
+        except BaseException as e:  # noqa: BLE001  macOS 上 ctypes.WinDLL 不存在 → AttributeError
+            return False, "• 測距儀初始化失敗，距離監測將被停用", classify_rangefinder_error(e)
 
     def validate_params(self, raw):
         """對應 main_csv.py L312-318 的參數轉型；失敗丟出 ValueError。"""
@@ -655,18 +921,31 @@ class MonitorService:
         enabled = {"temp": True, "audio": True, "distance": True}
         sim = self.simulated
         com = str(raw.get("com_port", "") or "").strip()
+        # diag：每個感測器預檢時的 (reason, detail)；被停用者在狀態面板顯示「未啟用」並帶出底層原因
+        diag = {k: (R_OK, "") for k in enabled}
         if not com and "temp" not in sim:
             warnings.append("• 未選擇溫度感測器COM端口，溫度監測將被停用")
             enabled["temp"] = False
+            diag["temp"] = (R_DISABLED, "未選擇 COM 埠")
+        elif com and "temp" not in sim:
+            try:  # 只查埠是否存在（不開埠）；找不到時不停用，讓 worker 持續回報並可在插上後自動恢復
+                diag["temp"] = check_port_present(com) or (R_OK, "")
+            except Exception as e:  # noqa: BLE001
+                diag["temp"] = (R_ERROR, f"列舉 COM 埠失敗：{e}")
         audio_sel = str(raw.get("audio_device", "") or "")
         if "audio" not in sim and (not audio_sel or audio_sel in (AUDIO_NONE, AUDIO_FAILED)):
             warnings.append("• 未選擇有效的音訊設備，音訊監測將被停用")
             enabled["audio"] = False
+            diag["audio"] = (R_NOT_FOUND if audio_sel == AUDIO_NONE else R_DISABLED,
+                             "系統找不到任何音訊輸入設備" if audio_sel == AUDIO_NONE
+                             else "音訊設備清單讀取失敗" if audio_sel == AUDIO_FAILED else "未選擇音訊設備")
         if "distance" not in sim:
-            ok, msg = self.check_rangefinder()
+            ok, msg, diag["distance"] = self.check_rangefinder()
             if not ok:
                 warnings.append(msg)
                 enabled["distance"] = False
+        self.preflight_reasons = {k: {"reason": r, "detail": d} for k, (r, d) in diag.items()}
+        self._show_preflight(enabled, diag)
 
         errors = []
         if not any(enabled.values()):
@@ -686,8 +965,46 @@ class MonitorService:
         except OSError as e:
             errors.append(f"無法建立存檔資料夾 {DATA_DIR}: {e}")
 
+        for k, (r, d) in diag.items():  # 預檢結果寫 log（含被停用的原因）
+            slog(INFO if enabled[k] and r == R_OK else WARN, SENSOR_NAMES[k],
+                 f"預檢：{'可用' if enabled[k] else '停用'} [{r}] {REASON_LABELS[r]}" + (f"：{d}" if d else ""))
+        for w in warnings:
+            slog(WARN, SRC_SYSTEM, "預檢警告：" + w.lstrip("• "))
+        for e in errors:
+            slog(ERROR, SRC_SYSTEM, "預檢錯誤：" + e)
+        slog(INFO if not errors else ERROR, SRC_SYSTEM,
+             f"預檢結果：{'通過' if not errors else '未通過'}（啟用 "
+             f"{'、'.join(SENSOR_NAMES[k] for k in enabled if enabled[k]) or '無'}；警告 {len(warnings)} 項）")
         return {"ok": not errors, "errors": errors, "warnings": warnings,
-                "enabled": enabled, "parsed": parsed, "disk": disk}
+                "enabled": enabled, "parsed": parsed, "disk": disk, "diag": self.preflight_reasons}
+
+    def _show_preflight(self, enabled, diag):
+        """預檢結果立刻推到狀態面板，讓使用者在確認 dialog 前就看到各感測器為何被停用／可能有問題。
+        只在非監測中更新；曾由預檢標示、現在已恢復正常的感測器還原成待機。
+        直接改欄位而不走 set_sensor：預檢不算失敗，不累加 fail_count、也不寫狀態變化 log。"""
+        with self.lock:
+            if self.phase in ("running", "stopping"):
+                return
+            for k, (r, d) in diag.items():
+                s = self.sensors[k]
+                if not enabled[k]:
+                    s.update(text="未啟用", value=None, level="off", reason=R_DISABLED,
+                             detail=self._disabled_detail(SENSOR_NAMES[k], d), fail_count=0)
+                    self._pf_shown.add(k)
+                elif r != R_OK:  # 仍會啟用，但預檢已看出問題（例如 COM 埠不存在）
+                    s.update(text="預檢異常", value=None, reason=r, detail=f"{SENSOR_NAMES[k]}：{d}", fail_count=0,
+                             level="error" if r in (R_DRIVER, R_NOT_FOUND, R_ERROR) else "warn")
+                    self._pf_shown.add(k)
+                elif k in self._pf_shown:
+                    s.update(text={"temp": "-- °C", "distance": "-- mm", "audio": "--"}[k],
+                             level="idle", reason=R_IDLE, detail="")
+                    self._pf_shown.discard(k)
+        self.push_state()
+
+    @staticmethod
+    def _disabled_detail(name, detail):
+        """「未啟用」的說明：帶出底層分類原因（例如 距離：此系統不是 Windows…）。"""
+        return f"{name}：{detail}" if detail else f"{name}未啟用"
 
     # ---------------- 開始 ----------------
     def start(self, raw, confirmed):
@@ -739,9 +1056,11 @@ class MonitorService:
             "platform": {"os": platform.platform(), "python": platform.python_version()},
             "spectrogram": None,
         }
+        recorder = None
         try:
             recorder = ExperimentRecorder(experiment_id, info)
             recorder.on_write_error = self._on_write_error
+            recorder.attach_log()
             if info["simulated"]:
                 with open(recorder.path("SIMULATED.txt"), "w", encoding="utf-8-sig") as f:
                     f.write("本實驗資料夾含模擬資料，不是真實量測！\n"
@@ -755,11 +1074,15 @@ class MonitorService:
                 recorder.open_csv("distance", f"distance_{experiment_id}.csv",
                                   ["Timestamp", "Elapsed(s)", "Absolute(mm)", "Relative(mm)", "Status"], encoding="utf-8-sig")
         except OSError as e:
+            slog(ERROR, SRC_SYSTEM, f"無法建立實驗資料夾或檔案: {e}", e)
+            if recorder:
+                recorder.close_log()
             return {"ok": False, "errors": [f"無法建立實驗資料夾或檔案: {e}"]}, 500
 
         with self.lock:
             if self.phase in ("running", "stopping"):
                 recorder.close_all()
+                recorder.close_log()
                 return {"ok": False, "errors": ["監測已在進行中"]}, 409
             self.run_id += 1
             self.recorder = recorder
@@ -787,19 +1110,21 @@ class MonitorService:
                      if enabled[key]]
             self.status_text = f"監測中 ({'+'.join(parts)})"
             self.phase = "running"
-            if not enabled["temp"]:
-                self.sensors["temp"].update(text="未啟用", level="off")
-            if not enabled["audio"]:
-                self.sensors["audio"].update(text="未啟用", level="off")
-            else:
-                self.sensors["audio"].update(text="初始化中", level="idle")
-            if not enabled["distance"]:
-                self.sensors["distance"].update(text="未啟用", level="off")
+            for key, name in SENSOR_NAMES.items():
+                if not enabled[key]:
+                    r = pf["diag"][key]
+                    self.sensors[key].update(
+                        text="未啟用", level="off", reason=R_DISABLED,
+                        detail=self._disabled_detail(name, r["detail"]))
+            if enabled["audio"]:
+                self.sensors["audio"].update(text="初始化中", level="idle", reason=R_INIT,
+                                             detail="正在開啟音訊設備")
             stop_event = self.stop_event
             run_id = self.run_id
         if self.simulated:
             self.sim_temp = sim_devices.SimTemperature(faults=self.sim_faults)
 
+        self._log_start(experiment_id, recorder, info, p, raw, pf, com_port, audio_sel)
         self.publish("reset", {"run_id": run_id, "audio_meta": self.audio_meta()})
         self.push_state()
 
@@ -826,6 +1151,33 @@ class MonitorService:
             t.start()
         return {"ok": True, "state": self.snapshot()}, 200
 
+    def _log_start(self, experiment_id, recorder, info, p, raw, pf, com_port, audio_sel):
+        """開始監測的完整紀錄：實驗 id、各感測器啟用狀態與裝置、所有參數。"""
+        enabled = pf["enabled"]
+        slog(INFO, SRC_SYSTEM, f"開始監測 {experiment_id}；資料夾 {recorder.rel_dir()}；"
+             f"啟用 {'、'.join(SENSOR_NAMES[k] for k in SENSOR_NAMES if enabled[k])}")
+        slog(INFO, SRC_SYSTEM, f"參數：{json.dumps(info['parameters'], ensure_ascii=False)}；"
+             f"原始輸入 {json.dumps({k: str(raw.get(k, '')) for k in DEFAULT_PARAMS}, ensure_ascii=False)}")
+        slog(INFO, SRC_SYSTEM, f"平台 {info['platform']['os']}，Python {info['platform']['python']}"
+             + (f"；模擬 {','.join(info['simulated'])}{'（含故障模擬）' if self.sim_faults else ''}"
+                if info["simulated"] else ""))
+        dev = info["devices"]
+        for key, label in (("temp", dev["temperature_com_port"]), ("audio", dev["audio_device"]),
+                           ("distance", dev["rangefinder"])):
+            if enabled[key]:
+                slog(INFO, SENSOR_NAMES[key], f"啟用：{label}")
+            else:
+                r = pf["diag"][key]
+                slog(WARN, SENSOR_NAMES[key], f"未啟用 [{r['reason']}] {r['detail']}")
+        if enabled["temp"] and "temp" not in self.simulated:
+            slog(INFO, SENSOR_NAMES["temp"], f"COM 埠 {com_port}，57600 8N1，每 1 秒讀一次")
+        if enabled["audio"]:
+            slog(INFO, SENSOR_NAMES["audio"], f"設備選擇 {audio_sel or '(模擬)'}，採樣率 {p['sample_rate']} Hz，"
+                 f"更新間隔 {p['update_interval']} 秒")
+        if enabled["distance"]:
+            slog(INFO, SENSOR_NAMES["distance"], f"間隔 {p['distance_interval']} 秒，"
+                 f"反射模式 {REFL_MODE_LABELS[p['refl_mode']]}，基準 {BASIC_REF} mm")
+
     def _on_write_error(self, key, exc):
         """ExperimentRecorder 寫檔失敗（例如磁碟已滿）時呼叫；每個檔案只通知一次。"""
         with self.lock:
@@ -842,6 +1194,7 @@ class MonitorService:
             if self.phase != "running" or self.finalizing:
                 return False
             self.finalizing = True
+            slog(INFO, SRC_SYSTEM, f"收到停止請求：{STOP_REASONS.get(reason, reason)}")
             self.phase = "stopping"
             self.status_text = "停止中（儲存資料）"
             self.stop_event.set()
@@ -859,16 +1212,19 @@ class MonitorService:
             # 音訊 worker 可能正卡在 record_audio(update_interval) 內，給足時間讓它自行關閉串流
             t.join(timeout=5 if name in ("audio", "distance") else 2)
             if t.is_alive():
-                print(f"警告：{name} 執行緒未在時限內結束")
+                slog(WARN, SRC_SYSTEM, f"{name} 執行緒未在時限內結束")
                 if recorder:
                     recorder.add_error(f"{name} 執行緒未在時限內結束")
         try:
             self._save_all(recorder, reason)
         except Exception as e:  # noqa: BLE001
-            traceback.print_exc()
+            slog(ERROR, SRC_SYSTEM, f"存檔流程錯誤: {e}", e)
             self.notify("warning", "警告", f"數據儲存失敗: {e}")
             if recorder:
                 recorder.add_error(f"存檔流程錯誤: {e}")
+        slog(INFO, SRC_SYSTEM, "停止流程結束，實驗 log 關閉")
+        if recorder:
+            recorder.close_log()  # 先關實驗 log 再切到 stopped，避免下一次開始時兩份 log 重疊
         with self.lock:
             self.phase = "stopped"
             self.status_text = "已停止"
@@ -878,6 +1234,10 @@ class MonitorService:
             if self.enabled["audio"]:
                 self.sensors["audio"]["text"] = "已停止"
                 self.sensors["audio"]["level"] = "off"
+            for key, s in self.sensors.items():
+                # 正常/待機/初始化中的感測器標為已停止；失敗中的保留最後的具體原因供事後查看
+                if self.enabled.get(key) and s["reason"] in (R_OK, R_IDLE, R_INIT):
+                    s["reason"], s["detail"] = R_STOPPED, "監測已停止"
         self.push_state()
 
     def _save_all(self, recorder, reason):
@@ -894,15 +1254,27 @@ class MonitorService:
         exp_id = recorder.experiment_id
         messages = [f"資料夾: {recorder.rel_dir()}"]
         summary = {f["key"]: f for f in recorder.summary()["files"]}
-        if "temperature" in summary:
-            messages.append(f"溫度 {summary['temperature']['rows']} 筆")
-        if "distance" in summary:
-            messages.append(f"距離 {summary['distance']['rows']} 筆")
+        slog(INFO, SRC_SYSTEM, f"原始資料已關檔，實際時長 {end_ts - start_ts:.1f} 秒")
+        with self.lock:
+            for key, t in self._track.items():  # 停止時仍在失敗的感測器：留下最後的原因
+                if t["fail_start"] is not None:
+                    s = self.sensors[key]
+                    slog(WARN, SENSOR_NAMES.get(key, key), f"停止時仍在失敗 [{s['reason']}]："
+                         f"持續 {end_ts - t['fail_start']:.1f} 秒，累計 {t['fails']} 次；{s['detail']}")
+        for csv_key, label in (("temperature", "溫度"), ("distance", "距離")):
+            if csv_key in summary:
+                f = summary[csv_key]
+                messages.append(f"{label} {f['rows']} 筆")
+                slog(INFO, label, f"存檔 {f['name']}：{f['rows']} 筆，其中失敗 {f.get('fail_rows', 0)} 筆，{f['bytes']} bytes"
+                     + (f"；寫檔失敗：{f['write_error']}" if f.get("write_error") else ""))
 
         # 2) 由完整 WAV 分塊產生頻譜 CSV（格式與 save_spectrogram_to_csv 相同）
         audio = summary.get("audio")
         if audio and audio.get("frames", 0) > 0:
             messages.append(f"音訊 {audio['seconds']:.1f} 秒")
+            slog(INFO, "音訊", f"存檔 {audio['name']}：{audio['seconds']:.1f} 秒，{audio['frames']} frames，"
+                 f"{audio['channels']} ch，{audio['sample_rate']} Hz，{audio['bytes']} bytes"
+                 + (f"；寫檔失敗：{audio['write_error']}" if audio.get("write_error") else ""))
             wav_path = recorder.path(audio["name"])
             n_cols = chunked_spectrogram.n_spec_columns(audio["frames"] * audio["channels"])
             if n_cols >= 2:
@@ -926,8 +1298,10 @@ class MonitorService:
                                                  "seconds_to_generate": round(r["seconds"], 2)})
                     self._set_spec_job("done", 1.0)
                     messages.append(f"數據已儲存至: {csv_name}")
+                    slog(INFO, "音訊", f"頻譜 CSV 完成 {csv_name}：{r['n_times']} 列 × {r['n_freqs']} 頻率點，"
+                         f"耗時 {r['seconds']:.1f} 秒")
                 except Exception as e:  # noqa: BLE001
-                    traceback.print_exc()
+                    slog(ERROR, "音訊", f"頻譜 CSV 產生失敗: {e}", e)
                     recorder.update(spectrogram={"status": "error", "error": str(e)})
                     self._set_spec_job("error", None, str(e))
                     self.notify("warning", "頻譜 CSV 產生失敗",
@@ -935,8 +1309,9 @@ class MonitorService:
                                 f"uv run python app/chunked_spectrogram.py {recorder.rel_dir()}")
             else:
                 recorder.update(spectrogram={"status": "skipped", "reason": "音訊太短"})
+                slog(WARN, "音訊", "音訊太短，略過頻譜 CSV")
         elif self.enabled.get("audio"):
-            self.notify("warning", "警告", "沒有錄製到音訊數據")
+            self.notify("warning", "警告", "沒有錄製到音訊數據", src="音訊")
 
         recorder.update(status="completed")
         with self.lock:
@@ -986,22 +1361,23 @@ class MonitorService:
         """對應 main_csv.start_temperature_monitoring（每 1 秒一次）；每筆讀值（含失敗）寫入 temperature CSV。"""
         consecutive_failures = 0
         disconnected = False
-        read_temp = self.sim_temp.read if "temp" in self.simulated else continuous_read
+        read_temp = self.sim_temp.read_diag if "temp" in self.simulated else read_temperature_diag
 
         def log(value, status):
             now = time.time()
             recorder.write_row("temperature", [iso_now(now), f"{now - self.start_time:.3f}",
-                                               "" if value is None else f"{float(value):.3f}", status])
+                                               "" if value is None else f"{float(value):.3f}", status],
+                               ok=status == "ok")
 
         try:
             while not stop_event.is_set():
                 try:
-                    temp = read_temp(com_port)
+                    temp, reason, detail = read_temp(com_port)
                     if temp is not None:
                         consecutive_failures = 0
                         if disconnected:
                             disconnected = False
-                            self.notify("info", "通知", "溫度感測器已重新連接")
+                            self.notify("info", "通知", "溫度感測器已重新連接", src="溫度")
                         log(temp, "ok")
                         self.add_series_point("temp", round(float(temp), 2))
                         self.set_sensor("temp", text=f"{temp:.1f} °C", value=round(float(temp), 1), level="ok")
@@ -1009,54 +1385,67 @@ class MonitorService:
                         consecutive_failures += 1
                         if consecutive_failures >= MAX_FAILURES and not disconnected:
                             disconnected = True
-                            self.notify("warning", "警告", "溫度感測器可能已斷線，監測將繼續但不會讀取溫度數據")
+                            self.notify("warning", "警告", "溫度感測器可能已斷線，監測將繼續但不會讀取溫度數據",
+                                        src="溫度")
                         if disconnected:
                             log(None, "感測器斷線")
                             self.add_series_point("temp", None)
-                            self.set_sensor("temp", text="感測器斷線", value=None, level="error")
+                            self.set_sensor("temp", text="感測器斷線", value=None, level="error",
+                                            reason=reason, detail=detail)
                         else:
                             log(None, "讀取失敗")
                             self.add_series_point("temp", None)
-                            self.set_sensor("temp", text="讀取失敗", value=None, level="warn")
+                            self.set_sensor("temp", text="讀取失敗", value=None, level="warn",
+                                            reason=reason, detail=detail)
                 except Exception as e:  # noqa: BLE001
-                    print(f"溫度讀取錯誤: {e}")
+                    self._log_exception_once("temp", e, "溫度讀取錯誤")
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:
                         disconnected = True
-                        self.notify("warning", "警告", f"溫度感測器錯誤: {e}\n監測將繼續但不會讀取溫度數據")
+                        self.notify("warning", "警告", f"溫度感測器錯誤: {e}\n監測將繼續但不會讀取溫度數據",
+                                    src="溫度")
                     log(None, "連接錯誤")
                     self.add_series_point("temp", None)
                     self.set_sensor("temp", text="連接錯誤", value=None,
-                                    level="error" if disconnected else "warn")
+                                    level="error" if disconnected else "warn",
+                                    reason=R_ERROR, detail=f"讀取溫度時發生例外：{e}")
                 stop_event.wait(1)
         except BaseException as e:  # noqa: BLE001  worker 意外死掉也要留下紀錄並關檔
+            slog(ERROR, "溫度", f"溫度 worker 異常結束: {e}", e)
             recorder.add_error(f"溫度 worker 異常結束: {e}")
-            self.notify("error", "溫度監測中斷", f"溫度 worker 異常結束: {e}")
+            self.notify("error", "溫度監測中斷", f"溫度 worker 異常結束: {e}", src="溫度")
         finally:
             recorder.close("temperature")
 
     def _audio_worker(self, stop_event, device_index, sample_rate, update_interval, recorder):
         """對應 main_csv.start_audio_monitoring。每段錄音（含逾時補零的片段）都寫入 WAV 保持時間對齊。"""
         audio_rec = None
+        init_diag = None  # 初始化階段失敗時的 (reason, detail)
         try:
             if device_index is None:
+                init_diag = diagnose_audio_device(None)
                 raise Exception("無效的音訊設備")
             recorder_cls = sim_devices.SimAudioRecorder if "audio" in self.simulated else AudioRecorder
+            sim_kw = {"faults": self.sim_faults} if "audio" in self.simulated else {}
             try:
                 audio_rec = recorder_cls(sample_rate=sample_rate, channels=None, chunk=1024,
-                                         verbose=True, device_index=device_index)
+                                         verbose=True, device_index=device_index, **sim_kw)
             except SystemExit as e:
-                # AudioRecorder 找不到/打不開設備時會 sys.exit(1)，在此轉成錯誤事件
+                # AudioRecorder 找不到/打不開設備時會 sys.exit(1)，在此轉成錯誤事件，並直接查 pyaudio 找出原因
+                init_diag = diagnose_audio_device(device_index)
                 raise RuntimeError(f"音訊錄製器初始化失敗（AudioRecorder 結束碼 {e.code}），"
                                    "請檢查設備是否被佔用或麥克風權限") from None
             exp_id = recorder.experiment_id
             recorder.open_wav("audio", f"audio_{exp_id}.wav", audio_rec.channels, sample_rate)
             recorder.update(audio={"device_index": audio_rec.device_index, "channels": audio_rec.channels,
                                    "sample_rate": sample_rate, "sample_format": "int16"})
+            slog(INFO, "音訊", f"初始化完成：設備 {audio_rec.device_index}，{audio_rec.channels} 聲道，{sample_rate} Hz，"
+                 f"WAV audio_{exp_id}.wav")
             self.set_sensor("audio", text=f"錄音中（設備 {audio_rec.device_index}，{audio_rec.channels} 聲道）",
                             level="ok")
             error_notified = False
             zero_seconds = 0.0
+            last_ok_push = time.time()
 
             while not stop_event.is_set():
                 try:
@@ -1071,36 +1460,44 @@ class MonitorService:
                         if zero_seconds >= 3 and not self.zero_warned:
                             self.zero_warned = True
                             self.notify("warning", "警告", "連續 3 秒錄到的音訊全為 0，"
-                                        "可能是麥克風權限未開啟或設備靜音")
-                            self.set_sensor("audio", text="訊號全為 0", level="warn")
+                                        "可能是麥克風權限未開啟或設備靜音", src="音訊")
+                            self.set_sensor("audio", text="訊號全為 0", level="warn", reason=R_NO_DATA,
+                                            detail="訊號全為 0：麥克風權限未開、靜音或未接")
                         elif zero_seconds == 0 and self.zero_warned:
                             self.zero_warned = False
                             self.set_sensor("audio", text="錄音中", level="ok")
+                        elif zero_seconds == 0 and not error_notified and time.time() - last_ok_push >= 1:
+                            # 正常錄音時每秒刷新一次 last_ok，狀態面板的「最後正常」才不會一直累加
+                            last_ok_push = time.time()
+                            self.set_sensor("audio", level="ok")
                     if error_notified:
                         error_notified = False
-                        self.notify("info", "通知", "音訊設備已恢復正常")
+                        self.notify("info", "通知", "音訊設備已恢復正常", src="音訊")
                         self.set_sensor("audio", text="錄音中", level="ok")
                 except Exception as audio_error:  # noqa: BLE001
-                    print(f"音訊錄製錯誤: {audio_error}")
+                    self._log_exception_once("audio", audio_error, "音訊錄製錯誤")
                     if not error_notified:
                         error_notified = True
                         recorder.add_error(f"音訊錄製錯誤: {audio_error}")
                         self.notify("warning", "警告",
-                                    f"音訊錄製出現錯誤: {audio_error}\n監測將繼續但音訊數據可能不完整")
-                        self.set_sensor("audio", text="錄製錯誤", level="warn")
+                                    f"音訊錄製出現錯誤: {audio_error}\n監測將繼續但音訊數據可能不完整", src="音訊")
+                    # 每次失敗都更新（累加 fail_count）；text/level 與原本相同
+                    self.set_sensor("audio", text="錄製錯誤", level="warn", reason=R_ERROR,
+                                    detail=f"錄音過程發生錯誤：{audio_error}")
                     stop_event.wait(update_interval)
         except BaseException as e:  # noqa: BLE001
-            print(f"音訊監測錯誤: {e}")
+            slog(ERROR, "音訊", f"音訊監測錯誤: {e}", e)
             recorder.add_error(f"音訊監測錯誤: {e}")
-            self.notify("warning", "警告", f"音訊監測出現問題: {e}\n監測將繼續但不會有音訊數據")
-            self.set_sensor("audio", text="初始化失敗", level="error")
+            self.notify("warning", "警告", f"音訊監測出現問題: {e}\n監測將繼續但不會有音訊數據", src="音訊")
+            reason, detail = init_diag or (R_ERROR, f"音訊初始化失敗：{e}")
+            self.set_sensor("audio", text="初始化失敗", level="error", reason=reason, detail=detail)
         finally:
             recorder.close("audio")  # 補寫 WAV header 並關檔
             if audio_rec is not None:
                 try:
                     audio_rec.close()
                 except BaseException as e:  # noqa: BLE001
-                    print(f"關閉音訊錄音器錯誤: {e}")
+                    slog(WARN, "音訊", f"關閉音訊錄音器錯誤: {e}", e)
 
     def _ingest_audio(self, chunk, sample_rate):
         """只供畫面顯示：頻譜圖新欄（有上限的 deque）。存檔由 WAV 負責。"""
@@ -1147,7 +1544,7 @@ class MonitorService:
             if t0 is None:
                 t0 = now
             if rel is None:
-                recorder.write_row("distance", [now, f"{now - t0:.3f}", "", "", status])
+                recorder.write_row("distance", [now, f"{now - t0:.3f}", "", "", status], ok=False)
             else:
                 recorder.write_row("distance", [now, f"{now - t0:.3f}", f"{BASIC_REF + rel:.3f}", f"{rel:.3f}", status])
 
@@ -1161,15 +1558,15 @@ class MonitorService:
                 raise RuntimeError(f"測距儀開啟失敗: 0x{rc:X}")
             # initialize_rangefinder（main_csv.py L618）
             device.stop_measure()
-            print(">>> 測距儀 ABLE 校正中...")
+            slog(INFO, "距離", "ABLE 校正中...")
             device.dll.LKIF2_SetAbleMode(OUT_NO, LKIF_ABLEMODE_AUTO)
             device.dll.LKIF2_AbleStart(OUT_NO)
             stop_event.wait(2)
             device.dll.LKIF2_AbleStop()
-            print(">>> 測距儀 Auto-zero")
+            slog(INFO, "距離", "Auto-zero")
             device.stop_measure()
             device.dll.LKIF2_SetZeroSingle(OUT_NO, 1)
-            print(">>> 測距儀初始化完成")
+            slog(INFO, "距離", "測距儀初始化完成（零點與取樣參數已設定）")
             # 參數設定
             device.stop_measure()
             device.dll.LKIF2_SetSamplingCycle(OUT_NO, SAMPLING_US)
@@ -1177,6 +1574,7 @@ class MonitorService:
             device.dll.LKIF2_SetReflectionMode(OUT_NO, refl_mode)
             device.dll.LKIF2_SetBasicPoint(OUT_NO, 0)
             device.start_measure()
+            slog(INFO, "距離", f"開始量測：取樣 {SAMPLING_US} µs，反射模式 {REFL_MODE_LABELS[refl_mode]}，讀取間隔 {interval} 秒")
 
             consecutive_failures = 0
             disconnected = False
@@ -1191,7 +1589,7 @@ class MonitorService:
                         consecutive_failures = 0
                         if disconnected:
                             disconnected = False
-                            self.notify("info", "通知", "測距儀已重新連接")
+                            self.notify("info", "通知", "測距儀已重新連接", src="距離")
                         self.set_sensor("distance", text=f"{absolute:.1f} mm",
                                         value=round(float(absolute), 1), level="ok")
                     else:
@@ -1201,27 +1599,35 @@ class MonitorService:
                         consecutive_failures += 1
                         if consecutive_failures >= MAX_FAILURES and not disconnected:
                             disconnected = True
-                            self.notify("warning", "警告", "測距儀可能已斷線，監測將繼續但不會讀取距離數據")
+                            self.notify("warning", "警告", "測距儀可能已斷線，監測將繼續但不會讀取距離數據",
+                                        src="距離")
+                        reason, detail = RANGEFINDER_STATUS_DIAG.get(
+                            status, (R_ERROR, f"量測值無效（{status}）：檢查目標表面與感測頭設定"))
                         if disconnected:
-                            self.set_sensor("distance", text="感測器斷線", value=None, level="error")
+                            self.set_sensor("distance", text="感測器斷線", value=None, level="error",
+                                            reason=reason, detail=detail)
                         else:
-                            self.set_sensor("distance", text="讀取失敗", value=None, level="warn")
+                            self.set_sensor("distance", text="讀取失敗", value=None, level="warn",
+                                            reason=reason, detail=detail)
                 except Exception as e:  # noqa: BLE001
-                    print(f"測距儀讀取錯誤: {e}")
+                    self._log_exception_once("distance", e, "測距儀讀取錯誤")
                     log(f"ERROR: {e}")
                     self.add_series_point("distance", None)
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:
                         disconnected = True
-                        self.notify("warning", "警告", f"測距儀錯誤: {e}\n監測將繼續但不會讀取距離數據")
+                        self.notify("warning", "警告", f"測距儀錯誤: {e}\n監測將繼續但不會讀取距離數據", src="距離")
                     self.set_sensor("distance", text="連接錯誤", value=None,
-                                    level="error" if disconnected else "warn")
+                                    level="error" if disconnected else "warn",
+                                    reason=R_ERROR, detail=f"通訊錯誤：USB 可能中斷（{e}）")
                 stop_event.wait(interval)
         except BaseException as e:  # noqa: BLE001
-            print(f"測距儀監測錯誤: {e}")
+            slog(ERROR, "距離", f"測距儀監測錯誤: {e}", e)
             recorder.add_error(f"測距儀監測錯誤: {e}")
-            self.notify("warning", "警告", f"測距儀監測出現問題: {e}\n監測將繼續但不會有距離數據")
-            self.set_sensor("distance", text="初始化失敗", value=None, level="error")
+            self.notify("warning", "警告", f"測距儀監測出現問題: {e}\n監測將繼續但不會有距離數據", src="距離")
+            reason, detail = classify_rangefinder_error(e)
+            self.set_sensor("distance", text="初始化失敗", value=None, level="error",
+                            reason=reason, detail=detail)
         finally:
             recorder.close("distance")
             if device is not None:
@@ -1237,7 +1643,7 @@ class MonitorService:
                 return
             self.shutdown_done = True
             running = self.phase == "running"
-        print("正在關閉：停止所有監測、關閉檔案並釋放硬體…")
+        slog(INFO, SRC_SYSTEM, f"伺服器關閉中（{STOP_REASONS.get(reason, reason)}）：停止所有監測、關閉檔案並釋放硬體…")
         if running:
             self.request_stop(reason)
         # 等待 finalizer：原始資料（WAV/CSV）會先關檔，接著產生頻譜 CSV（1 小時錄音約 6 秒）
@@ -1250,10 +1656,10 @@ class MonitorService:
                 job = self.spectrogram_job
             if job and job.get("status") == "running" and not notified:
                 notified = True
-                print("正在產生頻譜 CSV（原始資料已安全存檔）。若要略過可再按一次 Ctrl+C，"
-                      "之後用 uv run python app/chunked_spectrogram.py <實驗資料夾> 補產生。")
+                slog(INFO, SRC_SYSTEM, "正在產生頻譜 CSV（原始資料已安全存檔）。若要略過可再按一次 Ctrl+C，"
+                     "之後用 uv run python app/chunked_spectrogram.py <實驗資料夾> 補產生。")
             time.sleep(0.1)
-        print("已關閉。")
+        slog(INFO, SRC_SYSTEM, "伺服器已關閉")
 
 
 service = MonitorService()
@@ -1264,6 +1670,16 @@ app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"),
 # ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
+@app.errorhandler(Exception)
+def handle_unexpected(e):
+    """路由裡未處理的例外：寫進 log（含 traceback）並回 500 JSON；HTTP 錯誤（404 等）照原樣回傳。"""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    slog(ERROR, SRC_SYSTEM, f"未處理的例外 {request.method} {request.path}: {e}", e)
+    return jsonify({"ok": False, "errors": [f"伺服器內部錯誤: {e}"]}), 500
+
+
 @app.route("/")
 def index():
     return render_template("monitor.html")
@@ -1390,6 +1806,11 @@ def main():
 
     # 以專案根目錄為工作目錄（與 main_csv.py 相同；資料路徑本身已是絕對路徑）
     os.chdir(BASE_DIR)
+    setup_logging()
+    # worker thread 裡沒接住的例外也要進 log（預設只會印到 stderr）
+    threading.excepthook = lambda a: slog(ERROR, SRC_SYSTEM, f"執行緒 {a.thread.name if a.thread else '?'} "
+                                                           f"未處理的例外: {a.exc_value}",
+                                          a.exc_value)
     # 輸出導到檔案時也即時寫出；Windows 主控台若不是 UTF-8，無法編碼的字元以 ? 取代而不是讓程式崩潰
     sys.stdout.reconfigure(line_buffering=True, errors="replace")
     sys.stderr.reconfigure(errors="replace")
@@ -1407,21 +1828,22 @@ def main():
     if os.name == "nt":
         try:
             _install_console_close_handler()
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-    print(f"感測器整合系統（網頁版）: http://{args.host}:{args.port}")
-    print("資料一律存到 Sensor_Data/EXP_<時間>/。按 Ctrl+C 結束。")
+        except Exception as e:  # noqa: BLE001
+            slog(ERROR, SRC_SYSTEM, f"安裝主控台關閉 handler 失敗: {e}", e)
+    slog(INFO, SRC_SYSTEM, f"感測器整合系統（網頁版）啟動：http://{args.host}:{args.port}（{platform.platform()}，"
+         f"Python {platform.python_version()}）")
+    slog(INFO, SRC_SYSTEM, f"資料存到 Sensor_Data/EXP_<時間>/，伺服器 log 在 {os.path.relpath(LOG_DIR, BASE_DIR)}/。按 Ctrl+C 結束。")
     if service.simulated:
-        print(f"*** 模擬模式：{', '.join(sorted(service.simulated))} 使用模擬資料（不是真實量測）"
-              f"{'，含故障模擬' if service.sim_faults else ''} ***")
+        slog(WARN, SRC_SYSTEM, f"*** 模擬模式：{', '.join(sorted(service.simulated))} 使用模擬資料（不是真實量測）"
+             f"{'，含故障模擬' if service.sim_faults else ''} ***")
     try:
         # 不開 debug reloader：reloader 會啟動兩個行程，硬體會被雙開
         app.run(host=args.host, port=args.port, threaded=True, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         pass
-    except BaseException:
+    except BaseException as e:
         _exit_reason["value"] = "error"
-        traceback.print_exc()
+        slog(ERROR, SRC_SYSTEM, f"伺服器未處理的例外: {e}", e)
     finally:
         service.shutdown(_exit_reason["value"])
 
