@@ -232,7 +232,7 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .recbar-files .ferr { color: var(--err); }
 
 /* ---------- 數值卡片 ---------- */
-.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .stat {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
@@ -245,7 +245,6 @@ input[aria-invalid="true"] { border-color: var(--err); }
   font-size: 32px; font-weight: 500; letter-spacing: -.02em; line-height: 1.15;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.num.is-text { font-family: var(--font); font-size: 20px; letter-spacing: 0; color: var(--text-2); }
 .unit { font-size: 13px; color: var(--text-3); }
 .stat-sub { margin: 0; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .progress { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--border); }
@@ -303,9 +302,6 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .dlg-actions .btn { height: 36px; }
 
 /* ---------- 響應式 ---------- */
-@media (max-width: 1200px) {
-  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -314,10 +310,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
   .topbar { padding: 0 16px; }
 }
 @media (max-width: 480px) {
-  .stats { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .stats { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .stat { padding: 10px 12px; }
   .num { font-size: 26px; }
-  #card-time, .stat-status { grid-column: span 2; }
   .canvas-wrap { height: 200px; }
   .canvas-spec { height: 300px; }
   .brand h1 { font-size: 14px; }

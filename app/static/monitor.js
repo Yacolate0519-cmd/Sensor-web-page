@@ -26,7 +26,7 @@
       bg: v("--chart-bg"), grid: v("--chart-grid"), axis: v("--chart-axis"),
       tick: v("--chart-tick"), text: v("--text-2"), faint: v("--text-3"),
       wave: v("--chart-wave"), fft: v("--chart-fft"), // 沿用既有色票：距離用藍、溫度用紅
-      font: v("--font"), mono: v("--mono"),
+      warn: v("--warn"), font: v("--font"), mono: v("--mono"),
     };
   }
   matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
@@ -187,13 +187,14 @@
   class SeriesChart extends CanvasChart {
     constructor(canvas, opts) {
       super(canvas, { l: 62, r: 14, t: 8, b: 38 });
-      this.opts = opts;       // { labels, color, unit, minRange, decimals, noteEl }
+      this.opts = opts;       // { labels, color, unit, minRange, decimals }
       this.disabled = false;
+      this.statusText = "";  // 感測器目前狀態文字（最新值為 None 時顯示在警告標籤上）
       this.clear();
     }
     clear() {
       this.pts = []; this.lo = Infinity; this.hi = -Infinity;
-      this.updateNote(); this.requestDraw();
+      this.requestDraw();
     }
     setAll(points) { this.clear(); this.add(points); }
     add(points) {
@@ -204,14 +205,7 @@
         if (q[1] !== null) { if (q[1] < this.lo) this.lo = q[1]; if (q[1] > this.hi) this.hi = q[1]; }
       }
       if (this.pts.length > SERIES_KEEP) this.pts = downsampleSeries(this.pts, SERIES_TARGET);
-      this.updateNote(); this.requestDraw();
-    }
-    updateNote() {
-      const el = this.opts.noteEl; if (!el) return;
-      const n = this.pts.length;
-      if (!n) { el.textContent = this.disabled ? "未啟用" : "--"; return; }
-      const v = this.pts[n - 1][1];
-      el.textContent = v === null ? "讀取失敗" : `${v.toFixed(this.opts.decimals)} ${this.opts.unit}`;
+      this.requestDraw();
     }
     yRange() {
       let lo = this.lo, hi = this.hi;
@@ -249,6 +243,32 @@
       ctx.stroke();
       dots.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill(); });
       ctx.restore();
+      this.drawLatest(p, X, Y, color);
+    }
+    // 最新值標籤：圓點 + 圓角標籤，垂直置中於最後一個有效點；最新一筆為 null 時改警告樣式
+    drawLatest(p, X, Y, color) {
+      const pts = this.pts;
+      let k = pts.length - 1;
+      while (k >= 0 && pts[k][1] === null) k--;
+      if (k < 0) return; // 完全沒有有效點
+      const failed = k !== pts.length - 1;
+      const px = X(pts[k][0]), py = Y(pts[k][1]);
+      const ctx = this.ctx;
+      const text = failed ? (this.statusText || "讀取失敗") : `${pts[k][1].toFixed(this.opts.decimals)} ${this.opts.unit}`;
+      const bg = failed ? theme.warn : color;
+      ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = bg; ctx.fill();
+      ctx.lineWidth = 1.5; ctx.strokeStyle = theme.bg; ctx.stroke();
+      ctx.font = `600 11.5px ${theme.mono}`;
+      const padX = 7, bh = 20, bw = Math.ceil(ctx.measureText(text).width) + padX * 2;
+      // 預設放點的左側；左側放不下才貼繪圖區內側；y 夾在繪圖區內
+      const bx = Math.max(p.x + 3, Math.min(px - 9 - bw, p.x + p.w - bw - 3));
+      const by = Math.max(p.y + 2, Math.min(py - bh / 2, p.y + p.h - bh - 2));
+      ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 5);
+      ctx.fillStyle = bg; ctx.fill();
+      ctx.fillStyle = failed ? "#1a1400" : "#fff";
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(text, bx + padX, by + bh / 2 + 0.5);
     }
   }
 
@@ -429,11 +449,11 @@
   const specChart = new Spectrogram($("cv-spec"));
   const tempChart = new SeriesChart($("cv-temp"), {
     labels: ["Time (s)", "Temperature (°C)"],
-    color: () => theme.fft, unit: "°C", minRange: 1, decimals: 1, noteEl: $("temp-note"),
+    color: () => theme.fft, unit: "°C", minRange: 1, decimals: 1,
   });
   const distChart = new SeriesChart($("cv-dist"), {
     labels: ["Time (s)", "Distance (mm)"],
-    color: () => theme.wave, unit: "mm", minRange: 0.5, decimals: 2, noteEl: $("dist-note"),
+    color: () => theme.wave, unit: "mm", minRange: 0.5, decimals: 2,
   });
   const seriesCharts = { temp: tempChart, distance: distChart };
   const charts = [specChart, tempChart, distChart];
@@ -555,17 +575,6 @@
   // ------------------------------------------------------------------
   function setDot(el, level) { el.querySelector(".dot").dataset.level = level; }
 
-  function renderValue(numEl, unitEl, sensor, unit) {
-    const blank = sensor.text === `-- ${unit}`;
-    if (sensor.value !== null && sensor.value !== undefined) {
-      numEl.textContent = Number(sensor.value).toFixed(1); numEl.classList.remove("is-text"); unitEl.hidden = false;
-    } else if (blank) {
-      numEl.textContent = "--"; numEl.classList.remove("is-text"); unitEl.hidden = false;
-    } else {
-      numEl.textContent = sensor.text; numEl.classList.add("is-text"); unitEl.hidden = true;
-    }
-  }
-
   function renderTime(elapsedInt, elapsed, duration, phase) {
     $("time-num").textContent = String(elapsedInt);
     const bar = $("time-bar"), prog = bar.parentElement;
@@ -593,12 +602,13 @@
     const running = s.phase === "running", stopping = s.phase === "stopping";
     const locked = running || stopping;
 
-    renderValue($("temp-num"), $("temp-unit"), s.sensors.temp, "°C");
-    renderValue($("dist-num"), $("dist-unit"), s.sensors.distance, "mm");
-    setDot($("card-temp"), s.sensors.temp.level);
-    setDot($("card-distance"), s.sensors.distance.level);
-    $("temp-sub").textContent = s.enabled.temp && s.phase !== "idle" ? `${s.params.com_port} · 每秒更新` : "每秒更新";
-    $("dist-sub").textContent = `絕對距離 · 模式 ${s.params.refl_mode === "1" ? "1-鏡面反射" : "0-漫反射"}`;
+    // 圖卡標題列小字（原數值卡片副標）；警告標籤文字取自感測器狀態
+    $("temp-note").textContent = s.enabled.temp && s.phase !== "idle" ? `${s.params.com_port} · 每秒更新` : "每秒更新";
+    $("dist-note").textContent = `絕對距離 · 模式 ${s.params.refl_mode === "1" ? "1-鏡面反射" : "0-漫反射"}`;
+    Object.entries(seriesCharts).forEach(([k, c]) => {
+      const t = s.sensors[k].text;
+      if (c.statusText !== t) { c.statusText = t; c.requestDraw(); }
+    });
 
     renderTime(s.elapsed_int, s.elapsed, s.duration, s.phase);
     setDot($("card-time"), running ? "ok" : stopping ? "busy" : "idle");
@@ -629,7 +639,7 @@
     // 未啟用的感測器：圖卡顯示「未啟用」（尚未開始過監測時仍顯示「等待資料」）
     Object.entries(seriesCharts).forEach(([k, c]) => {
       const off = s.phase !== "idle" && !s.enabled[k];
-      if (c.disabled !== off) { c.disabled = off; c.updateNote(); c.requestDraw(); }
+      if (c.disabled !== off) { c.disabled = off; c.requestDraw(); }
     });
 
     if (prevRun !== null && s.run_id !== prevRun && s.run_id !== currentRun) {
