@@ -4,7 +4,7 @@
 
   const $ = (id) => document.getElementById(id);
   const PARAM_KEYS = ["com_port", "audio_device", "sample_rate",
-    "update_interval", "history_duration", "refl_mode", "distance_interval", "use_mongodb"];
+    "update_interval", "history_duration", "refl_mode", "distance_interval"];
   const AUDIO_PLACEHOLDERS = ["無可用音訊設備", "音訊設備檢測失敗"];
 
   let theme = readTheme();
@@ -568,13 +568,6 @@
     setDot($("lamp-distance"), s.sensors.distance.level);
     $("audio-sub").textContent = `音訊：${s.sensors.audio.text}`;
 
-    const db = s.db;
-    const dbChip = $("db-chip");
-    setDot(dbChip, { connected: "ok", disconnected: "warn", error: "error", disabled: "off" }[db.status] || "idle");
-    $("db-text").textContent = { connected: "MongoDB 已連線", disconnected: "MongoDB 未連線",
-      error: "MongoDB 錯誤", connecting: "MongoDB 連線中", disabled: "MongoDB 未啟用" }[db.status] || "MongoDB";
-    dbChip.title = db.message || "MongoDB";
-
     $("btn-start").disabled = locked || busy;
     $("btn-stop").disabled = !running;
     $("btn-stop").textContent = stopping ? "儲存中…" : "停止監測";
@@ -691,16 +684,6 @@
       const pf = await api("/api/preflight", { method: "POST", body: params });
       if (!pf.data) { await showError(["預檢失敗：伺服器沒有回應"]); return; }
       if (pf.data.errors && pf.data.errors.length) { await showError(pf.data.errors); return; }
-      if (pf.data.mongo && !pf.data.mongo.ok) {
-        const off = await dialog({
-          title: "MongoDB 無法連線", lead: pf.data.mongo.message.replace(/(\d\))/g, "\n$1"),
-          items: pf.data.mongo.error ? [`錯誤：${pf.data.mongo.error}`] : [],
-          okText: "關閉 MongoDB 繼續", cancelText: "取消",
-        });
-        if (!off) return;
-        $("use_mongodb").checked = false;
-        params.use_mongodb = "0";
-      }
       if (pf.data.warnings && pf.data.warnings.length) {
         const go = await dialog({
           title: "警告", lead: "檢測到以下問題:", items: pf.data.warnings,
@@ -756,9 +739,6 @@
         if (firstLoad && now - n.time > 30) { seenNotices.add(n.id); return; }
         toast(n);
       });
-      if (firstLoad && s.db.enabled && s.db.status === "disconnected") {
-        toast({ level: "warning", title: "資料庫警告", message: s.db.message });
-      }
     } finally {
       syncing = false;
       const queued = pendingAudio; pendingAudio = [];

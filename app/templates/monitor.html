@@ -17,7 +17,6 @@
     <div class="topbar-meta">
       <span class="chip chip-sim" id="sim-chip" hidden title="這些感測器的數值是模擬產生的，不是真實量測">模擬模式</span>
       <span class="chip" id="conn-chip" title="與伺服器的即時連線"><span class="dot" data-level="idle"></span><span id="conn-text">連線中</span></span>
-      <span class="chip" id="db-chip" title="MongoDB"><span class="dot" data-level="idle"></span><span id="db-text">資料庫</span></span>
     </div>
   </header>
 
@@ -85,16 +84,6 @@
             <div class="input-unit"><input id="distance_interval" name="distance_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
             <span class="field-hint">程式讀取測距儀的頻率，0.1 秒＝每秒 10 筆，決定存檔資料密度</span>
           </label>
-        </section>
-
-        <section class="group">
-          <h2>存檔</h2>
-          <label class="toggle">
-            <input type="checkbox" id="use_mongodb" name="use_mongodb">
-            <span class="toggle-track" aria-hidden="true"></span>
-            <span class="toggle-label">同時寫入 MongoDB</span>
-          </label>
-          <span class="field-hint">預設關閉。不論開關，所有感測器資料都會邊錄邊存到 Sensor_Data/EXP_時間/。</span>
         </section>
       </form>
 
