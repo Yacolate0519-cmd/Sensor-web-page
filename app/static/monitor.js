@@ -13,6 +13,7 @@
   let busy = false;          // 開始流程進行中
   let syncing = true;        // 正在從 /api/state 復原
   let pendingAudio = [];     // 復原期間暫存的 SSE 音訊事件
+  let pendingSeries = [];    // 復原期間暫存的 SSE 溫度／距離事件
   const seenNotices = new Set();
 
   // ------------------------------------------------------------------
@@ -24,7 +25,7 @@
     return {
       bg: v("--chart-bg"), grid: v("--chart-grid"), axis: v("--chart-axis"),
       tick: v("--chart-tick"), text: v("--text-2"), faint: v("--text-3"),
-      wave: v("--chart-wave"), fft: v("--chart-fft"),
+      wave: v("--chart-wave"), fft: v("--chart-fft"), // 沿用既有色票：距離用藍、溫度用紅
       font: v("--font"), mono: v("--mono"),
     };
   }
@@ -153,51 +154,100 @@
   }
 
   // ------------------------------------------------------------------
-  // 折線圖（波形／頻譜）
+  // 時間序列折線圖（溫度／距離）：x = 開始監測起的經過秒數，顯示完整曲線；null 值斷線
   // ------------------------------------------------------------------
-  class LineChart extends CanvasChart {
+  const SERIES_KEEP = 4000;     // 前端累積超過此點數就降採樣
+  const SERIES_TARGET = 2000;   // 降採樣後的目標點數
+
+  // 與後端 downsample_series 同邏輯：分桶後每段連續有效值留 min/max，每段連續 null 留一個 null 點
+  function downsampleSeries(pts, target) {
+    const n = pts.length;
+    if (n <= target) return pts;
+    const buckets = Math.max(1, target >> 1);
+    const out = [];
+    const flush = (run) => {
+      let lo = run[0], hi = run[0];
+      for (const q of run) { if (q[1] < lo[1]) lo = q; if (q[1] > hi[1]) hi = q; }
+      if (lo === hi) out.push(lo); else if (lo[0] < hi[0]) out.push(lo, hi); else out.push(hi, lo);
+    };
+    for (let b = 0; b < buckets; b++) {
+      let run = [], noneOpen = false;
+      for (let i = Math.floor(n * b / buckets), e = Math.floor(n * (b + 1) / buckets); i < e; i++) {
+        const q = pts[i];
+        if (q[1] === null) {
+          if (run.length) { flush(run); run = []; }
+          if (!noneOpen) { out.push(q); noneOpen = true; }
+        } else { noneOpen = false; run.push(q); }
+      }
+      if (run.length) flush(run);
+    }
+    return out;
+  }
+
+  class SeriesChart extends CanvasChart {
     constructor(canvas, opts) {
       super(canvas, { l: 62, r: 14, t: 8, b: 38 });
-      this.opts = opts;
-      this.data = null;
-      this.yr = null;
-      this.empty = "等待資料";
+      this.opts = opts;       // { labels, color, unit, minRange, decimals, noteEl }
+      this.disabled = false;
+      this.clear();
     }
-    clear(msg) { this.data = null; this.yr = null; this.empty = msg || "等待資料"; this.requestDraw(); }
-    set(x0, x1, ys) {
-      this.data = { x0, x1, ys };
-      let lo = Infinity, hi = -Infinity;
-      for (const v of ys) { if (v < lo) lo = v; if (v > hi) hi = v; }
-      const target = this.opts.range(lo, hi);
-      if (!this.yr) this.yr = target;
-      else {
-        // 擴張立即、收縮緩慢，避免軸不停跳動
-        const [a, b] = this.yr;
-        this.yr = [target[0] < a ? target[0] : a + (target[0] - a) * 0.15,
-                   target[1] > b ? target[1] : b + (target[1] - b) * 0.15];
+    clear() {
+      this.pts = []; this.lo = Infinity; this.hi = -Infinity;
+      this.updateNote(); this.requestDraw();
+    }
+    setAll(points) { this.clear(); this.add(points); }
+    add(points) {
+      const last = this.pts.length ? this.pts[this.pts.length - 1][0] : -Infinity;
+      for (const q of points) {
+        if (q[0] < last) continue; // 復原與 SSE 重疊：略過已有的時間
+        this.pts.push(q);
+        if (q[1] !== null) { if (q[1] < this.lo) this.lo = q[1]; if (q[1] > this.hi) this.hi = q[1]; }
       }
-      this.requestDraw();
+      if (this.pts.length > SERIES_KEEP) this.pts = downsampleSeries(this.pts, SERIES_TARGET);
+      this.updateNote(); this.requestDraw();
+    }
+    updateNote() {
+      const el = this.opts.noteEl; if (!el) return;
+      const n = this.pts.length;
+      if (!n) { el.textContent = this.disabled ? "未啟用" : "--"; return; }
+      const v = this.pts[n - 1][1];
+      el.textContent = v === null ? "讀取失敗" : `${v.toFixed(this.opts.decimals)} ${this.opts.unit}`;
+    }
+    yRange() {
+      let lo = this.lo, hi = this.hi;
+      if (!(hi >= lo)) return [0, 1];
+      const min = this.opts.minRange;
+      if (hi - lo < min) { const mid = (hi + lo) / 2; lo = mid - min / 2; hi = mid + min / 2; }
+      const pad = (hi - lo) * 0.08;
+      return [lo - pad, hi + pad];
     }
     draw() {
       const p = this.begin();
-      const d = this.data;
-      const x = d ? [d.x0, d.x1] : this.opts.defaultX();
-      const y = this.yr || this.opts.defaultY;
+      const pts = this.pts;
+      const tEnd = pts.length ? pts[pts.length - 1][0] : 0;
+      const x = [0, Math.max(10, tEnd)];
+      const y = this.yRange();
       const { X, Y } = this.axes(p, x, y, this.opts.labels);
-      if (!d || !d.ys.length) { this.placeholder(p, this.empty); return; }
+      if (!pts.length) { this.placeholder(p, this.disabled ? "未啟用" : "等待資料"); return; }
       const ctx = this.ctx;
       ctx.save();
       ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-      ctx.strokeStyle = this.opts.color();
+      const color = this.opts.color();
+      ctx.strokeStyle = color; ctx.fillStyle = color;
       ctx.lineWidth = 1.25; ctx.lineJoin = "round";
       ctx.beginPath();
-      const n = d.ys.length;
-      const dx = n > 1 ? (d.x1 - d.x0) / (n - 1) : 0;
-      for (let i = 0; i < n; i++) {
-        const px = X(d.x0 + dx * i), py = Y(d.ys[i]);
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      let pen = false, single = null; // pen：目前這段線已落筆；single：只有一個點的區段（補畫圓點）
+      const dots = [];
+      for (let i = 0; i < pts.length; i++) {
+        const q = pts[i];
+        if (q[1] === null) { if (single) dots.push(single); pen = false; single = null; continue; }
+        const px = X(q[0]), py = Y(q[1]);
+        if (!pen) { ctx.moveTo(px, py); pen = true; single = [px, py]; }
+        else { ctx.lineTo(px, py); single = null; }
       }
+      if (single) dots.push(single);
       ctx.stroke();
+      dots.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill(); });
       ctx.restore();
     }
   }
@@ -377,32 +427,24 @@
   }
 
   const specChart = new Spectrogram($("cv-spec"));
-  const waveChart = new LineChart($("cv-wave"), {
-    labels: ["Time (s)", "Amplitude"],
-    color: () => theme.wave,
-    defaultX: () => [0, parseFloat($("update_interval").value) || 0.1],
-    defaultY: [-1000, 1000],
-    range: (lo, hi) => { const a = Math.max(Math.abs(lo), Math.abs(hi), 50) * 1.1; return [-a, a]; },
+  const tempChart = new SeriesChart($("cv-temp"), {
+    labels: ["Time (s)", "Temperature (°C)"],
+    color: () => theme.fft, unit: "°C", minRange: 1, decimals: 1, noteEl: $("temp-note"),
   });
-  const fftChart = new LineChart($("cv-fft"), {
-    labels: ["Frequency (Hz)", "Magnitude (dB)"],
-    color: () => theme.fft,
-    defaultX: () => [0, (parseFloat($("sample_rate").value) || 22050) / 2],
-    defaultY: [0, 120],
-    range: (lo, hi) => { const pad = Math.max(3, (hi - lo) * 0.06); return [lo - pad, hi + pad]; },
+  const distChart = new SeriesChart($("cv-dist"), {
+    labels: ["Time (s)", "Distance (mm)"],
+    color: () => theme.wave, unit: "mm", minRange: 0.5, decimals: 2, noteEl: $("dist-note"),
   });
-  const charts = [specChart, waveChart, fftChart];
+  const seriesCharts = { temp: tempChart, distance: distChart };
+  const charts = [specChart, tempChart, distChart];
+
+  function applySeries(msg) {
+    if (msg.run_id !== currentRun) return;
+    Object.entries(msg.points || {}).forEach(([k, pts]) => seriesCharts[k].add(pts));
+  }
 
   function applyAudio(msg) {
     if (msg.run_id !== currentRun) return;
-    if (msg.wave) {
-      waveChart.set(0, msg.wave.n > 1 ? (msg.wave.n - 1) / (state?.audio_meta?.sample_rate || 22050) : 0, msg.wave.y);
-      $("wave-note").textContent = `${msg.wave.n} samples · ${(msg.wave.duration * 1000).toFixed(0)} ms`;
-    }
-    if (msg.spectrum) {
-      fftChart.set(msg.spectrum.fmin, msg.spectrum.fmax, msg.spectrum.y);
-      $("fft-note").textContent = `${msg.spectrum.y.length} bins · 0–${Math.round(msg.spectrum.fmax)} Hz`;
-    }
     if (msg.spec && msg.spec.count) {
       const bin = atob(msg.spec.b64);
       const bytes = new Uint8Array(bin.length);
@@ -418,7 +460,7 @@
     specChart.configure(meta);
     $("spec-note").textContent =
       `NFFT ${meta.nfft} · overlap ${meta.noverlap} · ${meta.sample_rate} Hz · 顯示 ${meta.history_duration} 秒`;
-    waveChart.clear(); fftChart.clear();
+    tempChart.clear(); distChart.clear();
   }
 
   // ------------------------------------------------------------------
@@ -584,6 +626,12 @@
     chip.textContent = `模擬模式：${sim.map((k) => simNames[k] || k).join("、")}${s.simulate_faults ? "（含故障）" : ""}`;
     document.querySelectorAll("[data-sim]").forEach((el) => { el.hidden = !sim.includes(el.dataset.sim); });
 
+    // 未啟用的感測器：圖卡顯示「未啟用」（尚未開始過監測時仍顯示「等待資料」）
+    Object.entries(seriesCharts).forEach(([k, c]) => {
+      const off = s.phase !== "idle" && !s.enabled[k];
+      if (c.disabled !== off) { c.disabled = off; c.updateNote(); c.requestDraw(); }
+    });
+
     if (prevRun !== null && s.run_id !== prevRun && s.run_id !== currentRun) {
       setupCharts(s.audio_meta, s.run_id);
     }
@@ -725,7 +773,7 @@
   }
 
   async function sync() {
-    syncing = true; pendingAudio = [];
+    syncing = true; pendingAudio = []; pendingSeries = [];
     try {
       const { data: s } = await api("/api/state");
       const firstLoad = state === null;
@@ -733,7 +781,7 @@
       setupCharts(s.audio_meta, s.run_id);
       renderState(s);
       if (s.spec_total > 0) await loadSpectrogramBulk();
-      if (s.wave || s.spectrum) applyAudio({ run_id: s.run_id, wave: s.wave, spectrum: s.spectrum });
+      Object.entries(s.series || {}).forEach(([k, pts]) => seriesCharts[k].setAll(pts));
       const now = Date.now() / 1000;
       (s.notices || []).forEach((n) => {
         if (firstLoad && now - n.time > 30) { seenNotices.add(n.id); return; }
@@ -743,6 +791,8 @@
       syncing = false;
       const queued = pendingAudio; pendingAudio = [];
       queued.forEach(applyAudio);
+      const queuedSeries = pendingSeries; pendingSeries = [];
+      queuedSeries.forEach(applySeries);
     }
   }
   let resyncTimer = 0;
@@ -773,6 +823,10 @@
       const msg = JSON.parse(e.data);
       if (syncing) pendingAudio.push(msg); else applyAudio(msg);
     });
+    es.addEventListener("series", (e) => {
+      const msg = JSON.parse(e.data);
+      if (syncing) pendingSeries.push(msg); else applySeries(msg);
+    });
     es.addEventListener("toast", (e) => toast(JSON.parse(e.data)));
     es.addEventListener("resync", () => resync()); // 伺服器端佇列塞滿（例如分頁在背景太久）時要求重新同步
     es.addEventListener("reset", (e) => {
@@ -788,8 +842,6 @@
   $("btn-stop").addEventListener("click", onStop);
   $("refresh-com").addEventListener("click", () => loadCom(false));
   $("refresh-audio").addEventListener("click", () => loadAudio(true));
-  ["sample_rate", "update_interval"].forEach((k) =>
-    $(k).addEventListener("input", () => { waveChart.requestDraw(); fftChart.requestDraw(); }));
 
   (async () => {
     connect();

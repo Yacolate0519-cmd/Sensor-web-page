@@ -57,7 +57,7 @@ from rangefinder import LKIF2Device  # noqa: E402
 from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK  # noqa: E402
 import chunked_spectrogram  # noqa: E402
 import sim_devices  # noqa: E402
-from signal_package import AudioRecorder, process_and_plot  # noqa: E402
+from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import continuous_read, list_candidate_ports  # noqa: E402
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
@@ -71,7 +71,7 @@ NFFT = 256
 NOVERLAP = 128
 HOP = NFFT - NOVERLAP
 MAX_FAILURES = 10
-MAX_PLOT_POINTS = 1024
+SERIES_MAX_POINTS = 2000       # 溫度／距離歷史送給前端時降採樣的點數上限
 SSE_QUEUE_MAX = 300
 MAX_DISPLAY_SECONDS = 600       # 頻譜圖顯示長度上限（只影響記憶體中的顯示緩衝）
 MIN_FREE_BYTES = 2 * 1024 ** 3  # 剩餘空間低於 2 GB 時預檢警告
@@ -161,34 +161,48 @@ def parse_audio_device_index(selected):
 # ---------------------------------------------------------------------------
 # 資料處理小工具
 # ---------------------------------------------------------------------------
-def downsample_envelope(y, max_points=MAX_PLOT_POINTS):
-    """波形降採樣：超過 max_points 時以 min/max 包絡保留峰值。"""
-    y = np.asarray(y)
-    n = len(y)
+def downsample_series(points, max_points=SERIES_MAX_POINTS):
+    """溫度／距離時間序列降採樣：points 為 [(elapsed 秒, 值或 None), ...]，回傳 [[t, v], ...]。
+
+    超過 max_points 時依索引分桶；桶內每段連續有效值保留 min/max（依時間排序，保住峰值），
+    每段連續失敗（None）只留一個 None 點，前端遇到 None 會斷線，所以缺口不會被抹平。
+    """
+    n = len(points)
     if n <= max_points:
-        return y.astype(float), n
-    buckets = max_points // 2
-    edges = np.linspace(0, n, buckets + 1).astype(int)
-    out = np.empty(buckets * 2)
+        return [[round(t, 2), v] for t, v in points]
+    buckets = max(1, max_points // 2)
+    edges = [n * i // buckets for i in range(buckets + 1)]
+
+    def run_min_max(run):
+        lo = min(run, key=lambda p: p[1])
+        hi = max(run, key=lambda p: p[1])
+        return [lo] if lo is hi else sorted((lo, hi), key=lambda p: p[0])
+
+    out = []
     for b in range(buckets):
-        seg = y[edges[b]:edges[b + 1]]
-        lo, hi = seg.min(), seg.max()
-        # 依出現順序排列，畫出來的線形才正確
-        if np.argmin(seg) < np.argmax(seg):
-            out[2 * b], out[2 * b + 1] = lo, hi
-        else:
-            out[2 * b], out[2 * b + 1] = hi, lo
-    return out, n
-
-
-def downsample_max(y, max_points=MAX_PLOT_POINTS):
-    """頻譜降採樣：每個區間取最大值（保留尖峰）。"""
-    y = np.asarray(y, dtype=float)
-    n = len(y)
-    if n <= max_points:
-        return y
-    edges = np.linspace(0, n, max_points + 1).astype(int)
-    return np.array([y[edges[i]:edges[i + 1]].max() for i in range(max_points)])
+        run = []  # 目前這一段連續有效值
+        none_open = False
+        for t, v in points[edges[b]:edges[b + 1]]:
+            if v is None:
+                if run:
+                    out.extend(run_min_max(run))
+                    run = []
+                if not none_open:
+                    out.append((t, None))
+                    none_open = True
+            else:
+                none_open = False
+                run.append((t, v))
+        if run:
+            out.extend(run_min_max(run))
+    if len(out) > max_points * 1.5:
+        # 失敗與成功頻繁交錯時，改用簡化版（每桶最多 min/max 兩點，整桶皆失敗才留 None），確保點數有上限
+        out = []
+        for b in range(buckets):
+            seg = points[edges[b]:edges[b + 1]]
+            valid = [p for p in seg if p[1] is not None]
+            out.extend(run_min_max(valid) if valid else [(seg[0][0], None)])
+    return [[round(t, 2), v] for t, v in out]
 
 
 def spec_to_int16_db(spec_linear):
@@ -199,10 +213,6 @@ def spec_to_int16_db(spec_linear):
     db = 10.0 * np.log10(np.maximum(spec_linear, 1e-20))
     q = np.clip(np.round(db * 10.0), -32000, 32000).astype("<i2")
     return q.T.copy()
-
-
-def round_list(arr, ndigits=2):
-    return [round(float(v), ndigits) for v in arr]
 
 
 def iso_now(ts=None):
@@ -432,9 +442,11 @@ class MonitorService:
         self.spec_cols = collections.deque()
         self.spec_total = 0  # 自本輪開始產生的欄總數（全域索引）
         self.spec_freqs = None
-        self.latest_wave = None
-        self.latest_spectrum = None
         self.zero_warned = False
+
+        # 溫度／距離時間序列（本次監測全程）：[(elapsed 秒, 值或 None), ...]；開始新監測時清空
+        self.series = {"temp": [], "distance": []}
+        self.series_sent = {"temp": 0, "distance": 0}  # 已透過 SSE 送出的筆數
 
         self.notices = collections.deque(maxlen=30)
         self.notice_seq = 0
@@ -483,6 +495,29 @@ class MonitorService:
 
     def push_state(self):
         self.publish("state", self.snapshot())
+
+    def add_series_point(self, key, value):
+        """記錄溫度／距離曲線的一個時間點（value 為 None 代表讀取失敗，圖上會斷線）。
+
+        只供畫面顯示，與存檔無關；x 軸為自開始監測起的經過秒數。
+        """
+        with self.lock:
+            if self.start_time is None:
+                return
+            self.series[key].append((time.time() - self.start_time, value))
+
+    def flush_series(self):
+        """把上次送出後新增的點批次透過 SSE 推給前端（由計時 thread 每 0.25 秒呼叫）。"""
+        with self.lock:
+            run_id = self.run_id
+            new = {}
+            for key, pts in self.series.items():
+                sent = self.series_sent[key]
+                if len(pts) > sent:
+                    new[key] = [[round(t, 2), v] for t, v in pts[sent:]]
+                    self.series_sent[key] = len(pts)
+        if new:
+            self.publish("series", {"run_id": run_id, "points": new})
 
     # ---------------- 狀態 ----------------
     def _reset_sensor_display(self):
@@ -544,8 +579,7 @@ class MonitorService:
     def full_state(self):
         snap = self.snapshot()
         with self.lock:
-            snap["wave"] = self.latest_wave
-            snap["spectrum"] = self.latest_spectrum
+            snap["series"] = {k: downsample_series(v) for k, v in self.series.items()}
             snap["notices"] = list(self.notices)[-10:]
         return snap
 
@@ -740,8 +774,8 @@ class MonitorService:
             self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
             self.spec_total = 0
             self.spec_freqs = None
-            self.latest_wave = None
-            self.latest_spectrum = None
+            self.series = {"temp": [], "distance": []}
+            self.series_sent = {"temp": 0, "distance": 0}
             self.zero_warned = False
             self.last_result = None
             self.elapsed = 0.0
@@ -944,7 +978,9 @@ class MonitorService:
                     last_rec = now
                     tick["recording"] = self.recorder.summary()  # 讓前端即時看到檔案大小／筆數
                 self.publish("tick", tick)
+                self.flush_series()
             stop_event.wait(0.1)
+        self.flush_series()
 
     def _temp_worker(self, stop_event, com_port, recorder):
         """對應 main_csv.start_temperature_monitoring（每 1 秒一次）；每筆讀值（含失敗）寫入 temperature CSV。"""
@@ -967,6 +1003,7 @@ class MonitorService:
                             disconnected = False
                             self.notify("info", "通知", "溫度感測器已重新連接")
                         log(temp, "ok")
+                        self.add_series_point("temp", round(float(temp), 2))
                         self.set_sensor("temp", text=f"{temp:.1f} °C", value=round(float(temp), 1), level="ok")
                     else:
                         consecutive_failures += 1
@@ -975,9 +1012,11 @@ class MonitorService:
                             self.notify("warning", "警告", "溫度感測器可能已斷線，監測將繼續但不會讀取溫度數據")
                         if disconnected:
                             log(None, "感測器斷線")
+                            self.add_series_point("temp", None)
                             self.set_sensor("temp", text="感測器斷線", value=None, level="error")
                         else:
                             log(None, "讀取失敗")
+                            self.add_series_point("temp", None)
                             self.set_sensor("temp", text="讀取失敗", value=None, level="warn")
                 except Exception as e:  # noqa: BLE001
                     print(f"溫度讀取錯誤: {e}")
@@ -986,6 +1025,7 @@ class MonitorService:
                         disconnected = True
                         self.notify("warning", "警告", f"溫度感測器錯誤: {e}\n監測將繼續但不會讀取溫度數據")
                     log(None, "連接錯誤")
+                    self.add_series_point("temp", None)
                     self.set_sensor("temp", text="連接錯誤", value=None,
                                     level="error" if disconnected else "warn")
                 stop_event.wait(1)
@@ -1063,18 +1103,8 @@ class MonitorService:
                     print(f"關閉音訊錄音器錯誤: {e}")
 
     def _ingest_audio(self, chunk, sample_rate):
-        """只供畫面顯示：波形、頻譜與頻譜圖新欄（有上限的 deque）。存檔由 WAV 負責。"""
+        """只供畫面顯示：頻譜圖新欄（有上限的 deque）。存檔由 WAV 負責。"""
         chunk = np.asarray(chunk, dtype=np.int16)
-        # 波形與頻譜：重用 signal_package.process_and_plot 的計算（不傳 axes 即只計算）
-        freqs, mags_db = process_and_plot(chunk, sample_rate)
-        wave_y, n = downsample_envelope(chunk)
-        wave_info = {"n": int(n), "duration": n / sample_rate, "y": round_list(wave_y, 1)}
-        spectrum = {
-            "fmax": float(freqs[-1]) if len(freqs) else sample_rate / 2.0,
-            "fmin": float(freqs[0]) if len(freqs) else 0.0,
-            "y": round_list(downsample_max(mags_db), 2),
-        }
-
         with self.lock:
             buf = np.concatenate((self.spec_pending, chunk))
 
@@ -1099,10 +1129,8 @@ class MonitorService:
                 self.spec_pending = buf
 
         with self.lock:
-            self.latest_wave = wave_info
-            self.latest_spectrum = spectrum
             run_id = self.run_id
-        self.publish("audio", {"run_id": run_id, "wave": wave_info, "spectrum": spectrum, "spec": cols_payload})
+        self.publish("audio", {"run_id": run_id, "spec": cols_payload})
 
     def _rangefinder_worker(self, stop_event, interval, refl_mode, recorder):
         """對應 main_csv.start_rangefinder_monitoring；每次讀取（含無效值與錯誤）都即時寫入 distance CSV。
@@ -1159,6 +1187,7 @@ class MonitorService:
                         rel = d["Value"]
                         absolute = BASIC_REF + rel
                         log("VALID", rel)
+                        self.add_series_point("distance", round(float(absolute), 3))
                         consecutive_failures = 0
                         if disconnected:
                             disconnected = False
@@ -1168,6 +1197,7 @@ class MonitorService:
                     else:
                         status = d["FloatResult"]
                         log(f"Unknown({d['RawStatus']})" if status == "Unknown" else status)
+                        self.add_series_point("distance", None)
                         consecutive_failures += 1
                         if consecutive_failures >= MAX_FAILURES and not disconnected:
                             disconnected = True
@@ -1179,6 +1209,7 @@ class MonitorService:
                 except Exception as e:  # noqa: BLE001
                     print(f"測距儀讀取錯誤: {e}")
                     log(f"ERROR: {e}")
+                    self.add_series_point("distance", None)
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:
                         disconnected = True

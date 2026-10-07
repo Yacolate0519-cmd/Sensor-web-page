@@ -69,16 +69,24 @@
 
         <section class="group">
           <h2>測距儀</h2>
-          <label class="field">
-            <span class="field-label">反射模式</span>
+          <div class="field">
+            <div class="field-label-row">
+              <label class="field-label" for="refl_mode">反射模式</label>
+              <button type="button" class="help-btn" aria-label="反射模式說明" aria-describedby="refl-tip">
+                <!-- 自繪 questionmark.circle（不依賴 SF Symbols 字型） -->
+                <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.95 1.95 0 1 1 2.9 1.7c-.7.4-1 .8-1 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="11.5" r=".85" fill="currentColor"/></svg>
+              </button>
+              <div class="help-tip" id="refl-tip" role="tooltip">
+                <p><b>0-漫反射</b>：霧面、粗糙表面，如塗層、陶瓷、未拋光金屬、紙、樹脂；感測頭垂直對準待測面。</p>
+                <p><b>1-鏡面反射</b>：鏡面、玻璃、拋光金屬；感測頭需傾斜安裝，讓反射光回到受光部（角度依 KEYENCE 說明書）。</p>
+                <p>讀值不穩或讀不到時，先確認模式是否符合表面。</p>
+              </div>
+            </div>
             <select id="refl_mode" name="refl_mode">
               <option value="0">0-漫反射</option>
               <option value="1">1-鏡面反射</option>
             </select>
-            <span class="field-hint"><b>0-漫反射</b>：霧面、粗糙表面，如塗層、陶瓷、未拋光金屬、紙、樹脂；感測頭垂直對準待測面。</span>
-            <span class="field-hint"><b>1-鏡面反射</b>：鏡面、玻璃、拋光金屬；感測頭需傾斜安裝，讓反射光回到受光部（角度依 KEYENCE 說明書）。</span>
-            <span class="field-hint">讀值不穩或讀不到時，先確認模式是否符合表面。</span>
-          </label>
+          </div>
           <label class="field">
             <span class="field-label">測距間隔</span>
             <div class="input-unit"><input id="distance_interval" name="distance_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
@@ -133,18 +141,18 @@
         <ul class="recbar-files" id="rec-files"></ul>
       </section>
 
-      <section class="charts" aria-label="音訊監測">
+      <section class="charts" aria-label="圖表">
         <figure class="chart chart-spec">
           <figcaption><h3>Spectrogram <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
           <div class="canvas-wrap canvas-spec"><canvas id="cv-spec"></canvas></div>
         </figure>
         <figure class="chart">
-          <figcaption><h3>Real-Time Waveform <span class="sim-tag" data-sim="audio" hidden>模擬</span></h3><span class="chart-note" id="wave-note">單次錄音片段</span></figcaption>
-          <div class="canvas-wrap"><canvas id="cv-wave"></canvas></div>
+          <figcaption><h3>Temperature <span class="sim-tag" data-sim="temp" hidden>模擬</span></h3><span class="chart-note" id="temp-note">--</span></figcaption>
+          <div class="canvas-wrap"><canvas id="cv-temp"></canvas></div>
         </figure>
         <figure class="chart">
-          <figcaption><h3>Real-Time Frequency Spectrum <span class="sim-tag" data-sim="audio" hidden>模擬</span></h3><span class="chart-note" id="fft-note">FFT</span></figcaption>
-          <div class="canvas-wrap"><canvas id="cv-fft"></canvas></div>
+          <figcaption><h3>Distance <span class="sim-tag" data-sim="distance" hidden>模擬</span></h3><span class="chart-note" id="dist-note">--</span></figcaption>
+          <div class="canvas-wrap"><canvas id="cv-dist"></canvas></div>
         </figure>
       </section>
     </main>
