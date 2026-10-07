@@ -38,6 +38,8 @@ Sensor-web-page/
 │   ├── spectrum_py_package/   #   AvaSpec 光譜儀
 │   └── utils/                 #   工具函式
 ├── drivers/                   # 廠商 DLL：LKIF2.dll、CmnLib.dll、KeyUsbDrv.dll、avaspecx64.dll
+│   ├── keyence_usb/           #   測距儀 USB 驅動安裝檔（DPInst_64.exe）
+│   └── avaspec_usb/           #   光譜儀 USB 驅動安裝檔（dpinst.exe）
 ├── legacy/                    # 舊版程式（Tkinter 介面、單一感測器腳本、check_db.py、environment.yml、spectra_logs/）
 ├── launchers/                 # 一鍵啟動器的實際邏輯與圖示（mac/、windows/）
 ├── scripts/                   # windows_selfcheck.py 環境自我檢查
@@ -163,7 +165,17 @@ uv run python main.py --help       # 所有參數
 - 監測在伺服器端進行，關掉或重新整理網頁不會中斷；重新開啟頁面會自動復原目前畫面。
 - 在終端機按 `Ctrl+C` 關閉伺服器：會先停止監測、關檔、產生頻譜 CSV 並釋放硬體。
 - 圖表不依賴 CDN，實驗室電腦離線也能使用。
-- 第一次在新電腦（特別是 Windows 筆電）使用前，先跑自我檢查：`uv run python scripts/windows_selfcheck.py`。
+- 第一次在新電腦（特別是 Windows 筆電）使用前，先裝硬體驅動（見下方「首次安裝硬體驅動」），再跑自我檢查：`uv run python scripts/windows_selfcheck.py`。
+
+#### 首次安裝硬體驅動（Windows，每台電腦只做一次）
+`drivers/` 裡的 DLL 是程式用的通訊函式庫，**不會**自動安裝 USB 驅動；USB 驅動要另外用系統管理員身分裝一次。裝好後寫進 Windows，**重開機、關機都不會消失**，之後直接啟動系統即可。只有重灌 Windows、換電腦，或在裝置管理員手動解除安裝時才需要重裝。
+
+| 裝置 | 安裝方式 | 裝好後裝置管理員會看到 |
+|---|---|---|
+| 測距儀 KEYENCE LK-G5000 | 先拔 USB → 右鍵 `drivers/keyence_usb/DPInst_64.exe` →「以系統管理員身分執行」→ 再接 USB | `WDF USB for KEYENCE LK-G5000` |
+| 光譜儀 AvaSpec | 先拔 USB → 右鍵 `drivers/avaspec_usb/dpinst.exe` →「以系統管理員身分執行」→ 再接 USB | `AvantesSpectrometers` 類別下的裝置 |
+
+若 `avaspecx64.dll` 載入時報缺 `VCRUNTIME140.dll`／`MSVCP140.dll`，安裝 Microsoft Visual C++ 2015–2022 x64 執行階段（`vc_redist.x64.exe`）。各資料夾內的 `README.md` 有驅動版本與裝置 ID。
 
 #### 存檔內容（整場實驗完整保存）
 按下「開始監測」就建立 `Sensor_Data/EXP_YYYYmmdd_HHMMSS/`，資料**邊錄邊寫**（每筆都 flush，當機或斷電也只會少最後一瞬間）：
@@ -172,7 +184,7 @@ uv run python main.py --help       # 所有參數
 |---|---|---|
 | `audio_<id>.wav` | 全程原始音訊（16-bit，實際取樣率與聲道數） | 約 160 MB／小時（22050 Hz 單聲道；雙聲道加倍） |
 | `temperature_<id>.csv` | `Timestamp(ISO), Elapsed(s), Temperature(C), Status`；讀取失敗的列 Temperature 留空、Status 記錄原因 | 約 0.2 MB／小時 |
-| `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(mm), Relative(mm), Status`；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
+| `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(µm), Relative(µm), Status`（以 µm 記錄、小數 3 位；Absolute = 50 mm 基準 + Relative）；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
 | `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
 | `experiment_<id>.json` | 參數、啟用的感測器、裝置、開始／結束時間、停止原因、各檔案筆數與錯誤紀錄 | 數 KB |
 | `experiment_<id>.log` | 這次實驗的完整 log（開始參數、各感測器狀態變化與失敗原因、恢復、通知、停止與存檔摘要），每行即時寫入；伺服器層級的 log 另存在 `logs/server_YYYYMMDD.log` | 數十 KB |

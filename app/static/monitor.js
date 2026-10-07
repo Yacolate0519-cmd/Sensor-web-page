@@ -675,8 +675,8 @@
     color: () => theme.fft, unit: "°C", minRange: 1, decimals: 1,
   });
   const distChart = new SeriesChart($("cv-dist"), {
-    labels: ["Time (s)", "Distance (mm)"],
-    color: () => theme.wave, unit: "mm", minRange: 0.5, decimals: 2,
+    labels: ["Time (s)", "Distance (µm)"],
+    color: () => theme.wave, unit: "µm", minRange: 500, decimals: 1,
   });
   const seriesCharts = { temp: tempChart, distance: distChart };
   const optHeat = new SpectrumHeatmap($("cv-opt"));

@@ -1,0 +1,113 @@
+;/*++
+;
+;Copyright (c) KEYENCE Corporation.  All rights reserved.
+;
+;Module Name:
+;
+;	KEYENCE_LK-G5000.INF
+;
+;Abstract:
+;	KEYENCE KMDF USB driver for Windows 2000,XP,Vista
+;
+;--*/
+
+[Version]
+Signature	= "$WINDOWS NT$"
+Class		= KeyenceUSB
+ClassGuid	= {71F238A1-4065-4730-B053-0ADB085CB899}
+Provider	= %KeyenceMfg%
+CatalogFile	= KEYENCE_LK-G5000.cat
+DriverVer=04/10/2014,1.7.0004.0
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=KeyenceClassReg
+
+[KeyenceClassReg]
+HKR,,,0,%ClassName%
+HKR,,Icon,,-5
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+; ================= Device section =====================
+
+[Manufacturer]
+%MfgName%	= KEYENCE,NTx86,NTAMD64
+
+; For XP and later
+[KEYENCE.NTx86]
+%USB\VID_0720&PID_0013.DeviceDesc%=KEYENCE_LK-G5000.Dev, USB\VID_0720&PID_0013	; KEYENCE_LK-G5000
+
+[KEYENCE.NTAMD64]
+%USB\VID_0720&PID_0013.DeviceDesc%=KEYENCE_LK-G5000.Dev, USB\VID_0720&PID_0013	; KEYENCE_LK-G5000
+
+[KEYENCE_LK-G5000.Dev.NT]
+CopyFiles=KEYENCE_LK-G5000.Files.Ext
+
+[KEYENCE_LK-G5000.Dev.NT.Services]
+Addservice = KEYENCE_LK-G5000, 0x00000002, KEYENCE_LK-G5000.AddService
+
+[KEYENCE_LK-G5000.AddService]
+DisplayName    = %KEYENCE_LK-G5000.SvcDesc%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %10%\System32\Drivers\KEYENCE_LK-G5000.sys
+AddReg         = KEYENCE_LK-G5000.AddReg
+LoadOrderGroup = Base
+
+[KEYENCE_LK-G5000.AddReg]
+HKR,"Parameters","DebugLevel",0x10001,2
+HKR, Parameters\Wdf, VerboseOn,       0x00010001, 1
+HKR, Parameters\Wdf, VerifierOn,      0x00010001, 1
+HKR, Parameters\Wdf, DbgBreakOnError, 0x00010001, 1
+
+[KEYENCE_LK-G5000.Files.Ext]
+KEYENCE_LK-G5000.sys
+
+[SourceDisksNames]
+1=%Disk_Description%,,,\x86
+2=%Disk_Description%,,,\amd64
+
+[SourceDisksFiles.x86]
+KEYENCE_LK-G5000.sys = 1
+wdfcoinstaller01007.dll=1 ; make sure the number matches with SourceDisksNames
+
+[SourceDisksFiles.amd64]
+KEYENCE_LK-G5000.sys = 2
+wdfcoinstaller01007.dll=2 ; make sure the number matches with SourceDisksNames
+
+;-------------- WDF Coinstaller installation
+[DestinationDirs]
+CoInstaller_CopyFiles = 11
+
+[KEYENCE_LK-G5000.Dev.NT.CoInstallers]
+AddReg=CoInstaller_AddReg
+CopyFiles=CoInstaller_CopyFiles
+
+[CoInstaller_CopyFiles]
+WdfCoInstaller01007.dll
+
+[CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller01007.dll,WdfCoInstaller"
+
+[KEYENCE_LK-G5000.Dev.NT.Wdf]
+KmdfService = KEYENCE_LK-G5000, KEYENCE_LK-G5000_wdfsect
+
+[KEYENCE_LK-G5000_wdfsect]
+KmdfLibraryVersion = 1.7
+
+;---------------------------------------------------------------;
+
+[Strings]
+KeyenceMfg			= "KEYENCE"
+MfgName				= "KEYENCE"
+
+Disk_Description		= "KEYENCE USB Driver Installation Disk"
+KEYENCE_LK-G5000.SvcDesc		= "KEYENCE_LK-G5000.sys : WDF Driver for KEYENCE USB Device"
+ClassName			= "KEYENCE USB Device Class"
+
+USB\VID_0720&PID_0013.DeviceDesc="WDF USB for KEYENCE LK-G5000"
+

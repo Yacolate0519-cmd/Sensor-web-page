@@ -93,7 +93,7 @@ EST_BYTES_PER_HOUR = {"wav": 158_760_044, "spectrogram": 297_639_967, "temperatu
 
 
 # 測距儀固定參數（main_csv.py L67-70）
-BASIC_REF = 50.0
+BASIC_REF = 50.0  # mm；LKIF2 回傳的 Value 是相對此基準的 mm，寫檔與顯示時換成 µm
 OUT_NO = 0
 SAMPLING_US = 1000
 RANGE_CODE = 0
@@ -770,7 +770,7 @@ class MonitorService:
         # 狀態面板的資料來源：每個 key 一個感測器（front end 的 SENSOR_ROWS 以 key 對應；缺少的 key 顯示「未接入」）
         self.sensors = {
             "temp": {"text": "-- °C", "value": None, "level": "idle"},
-            "distance": {"text": "-- mm", "value": None, "level": "idle"},
+            "distance": {"text": "-- µm", "value": None, "level": "idle"},
             "audio": {"text": "--", "level": "idle"},
             "spectrometer": {"text": "--", "value": None, "level": "idle"},
         }
@@ -1089,7 +1089,7 @@ class MonitorService:
                              level="error" if r in (R_DRIVER, R_NOT_FOUND, R_ERROR) else "warn")
                     self._pf_shown.add(k)
                 elif k in self._pf_shown:
-                    s.update(text={"temp": "-- °C", "distance": "-- mm", "audio": "--", "spectrometer": "--"}[k],
+                    s.update(text={"temp": "-- °C", "distance": "-- µm", "audio": "--", "spectrometer": "--"}[k],
                              level="idle", reason=R_IDLE, detail="")
                     self._pf_shown.discard(k)
         self.push_state()
@@ -1169,7 +1169,7 @@ class MonitorService:
                                   ["Timestamp", "Elapsed(s)", "Temperature(C)", "Status"], encoding="utf-8-sig")
             if enabled["distance"]:
                 recorder.open_csv("distance", f"distance_{experiment_id}.csv",
-                                  ["Timestamp", "Elapsed(s)", "Absolute(mm)", "Relative(mm)", "Status"], encoding="utf-8-sig")
+                                  ["Timestamp", "Elapsed(s)", "Absolute(µm)", "Relative(µm)", "Status"], encoding="utf-8-sig")
             # 光譜儀 CSV 的檔頭要等裝置開啟、讀到波長軸後才寫（由 _spectrometer_worker 處理）
         except OSError as e:
             slog(ERROR, SRC_SYSTEM, f"無法建立實驗資料夾或檔案: {e}", e)
@@ -1657,7 +1657,7 @@ class MonitorService:
             if rel is None:
                 recorder.write_row("distance", [now, f"{now - t0:.3f}", "", "", status], ok=False)
             else:
-                recorder.write_row("distance", [now, f"{now - t0:.3f}", f"{BASIC_REF + rel:.3f}", f"{rel:.3f}", status])
+                recorder.write_row("distance", [now, f"{now - t0:.3f}", f"{(BASIC_REF + rel) * 1000:.3f}", f"{rel * 1000:.3f}", status])
 
         try:
             if "distance" in self.simulated:
@@ -1694,14 +1694,14 @@ class MonitorService:
                     d = device.read_single(OUT_NO)
                     if d["FloatResult"] == "VALID":
                         rel = d["Value"]
-                        absolute = BASIC_REF + rel
+                        absolute = (BASIC_REF + rel) * 1000  # µm
                         log("VALID", rel)
                         self.add_series_point("distance", round(float(absolute), 3))
                         consecutive_failures = 0
                         if disconnected:
                             disconnected = False
                             self.notify("info", "通知", "測距儀已重新連接", src="距離")
-                        self.set_sensor("distance", text=f"{absolute:.1f} mm",
+                        self.set_sensor("distance", text=f"{absolute:.1f} µm",
                                         value=round(float(absolute), 1), level="ok")
                     else:
                         status = d["FloatResult"]

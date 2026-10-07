@@ -128,7 +128,8 @@ def check_audio():
 
 @check("KEYENCE 測距儀 LKIF2.dll",
        "1) 需要 64 位元 Python 搭配 64 位元 LKIF2.dll（本專案附的版本），且 CmnLib.dll、KeyUsbDrv.dll 要在同一資料夾（drivers/）\n"
-       "2) 安裝 KEYENCE LK-Navigator / USB 驅動，確認裝置管理員中有 LK-G5000\n"
+       "2) USB 驅動只需裝一次：先拔 USB，以系統管理員身分執行 drivers\\keyence_usb\\DPInst_64.exe，再接 USB；\n"
+       "   裝置管理員應出現「WDF USB for KEYENCE LK-G5000」\n"
        "3) 「OpenDevice 失敗」表示 DLL 正常但沒有連上控制器：檢查 USB 線與控制器電源")
 def check_lkif():
     if os.name != "nt":
@@ -143,6 +144,24 @@ def check_lkif():
         return "WARN", f"DLL 載入成功，但開啟裝置失敗：{e}"
     dev.close()
     return "OK", "DLL 載入並成功開啟裝置"
+
+
+@check("AvaSpec 光譜儀 avaspecx64.dll",
+       "1) 需要 64 位元 Python、drivers/avaspecx64.dll，以及 PyQt5（uv sync --extra spectrometer）\n"
+       "2) 缺 VCRUNTIME140.dll／MSVCP140.dll：安裝 Microsoft Visual C++ 2015–2022 x64 執行階段（vc_redist.x64.exe）\n"
+       "3) USB 驅動只需裝一次：先拔 USB，以系統管理員身分執行 drivers\\avaspec_usb\\dpinst.exe，再接 USB；\n"
+       "   裝置管理員應出現 AvantesSpectrometers 類別下的裝置")
+def check_avaspec():
+    if os.name != "nt":
+        return "WARN", "非 Windows 系統，略過（此項僅在 Windows 有意義）"
+    sys.path.insert(0, os.path.join(ROOT, "app"))
+    import spectrometer_driver
+    try:
+        dev = spectrometer_driver.open_spectrometer()
+    except RuntimeError as e:
+        return "WARN", f"DLL 載入成功，但開啟光譜儀失敗：{e}"
+    dev.close()
+    return "OK", "DLL 載入並成功開啟光譜儀"
 
 
 @check("存檔資料夾寫入與剩餘空間",
@@ -189,6 +208,7 @@ def main():
     check_com()
     check_audio()
     check_lkif()
+    check_avaspec()
     check_disk()
     check_port(args.port)
     print(f"\n結果：OK {results.count('OK')}、WARN {results.count('WARN')}、FAIL {results.count('FAIL')}")
