@@ -2,7 +2,6 @@
 
 在專案資料夾執行：
     uv run python scripts/windows_selfcheck.py            # 一般檢查
-    uv run python scripts/windows_selfcheck.py --mongo    # 另外檢查 MongoDB 連線
     uv run python scripts/windows_selfcheck.py --port 5002
 
 每一項輸出 OK / WARN / FAIL 與排錯建議。也可以在 macOS 上執行（測距儀那項會顯示不支援）。
@@ -179,25 +178,8 @@ def check_port(port):
     return "OK", f"127.0.0.1:{port} 可用"
 
 
-@check("MongoDB（選用）",
-       "找不到 MongoDB（localhost:27017）時資料仍會完整存成檔案。若要使用：\n"
-       "1) 安裝 MongoDB Community Server（安裝時勾選 Install as a Service）\n"
-       "2) 執行 services.msc 確認服務「MongoDB」已啟動\n3) 或在網頁中關閉「同時寫入 MongoDB」")
-def check_mongo():
-    import pymongo
-    c = pymongo.MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=3000)
-    try:
-        info = c.server_info()
-        return "OK", f"MongoDB {info.get('version')} 連線成功"
-    except Exception as e:  # noqa: BLE001
-        return "FAIL", str(e).split(",")[0][:160]
-    finally:
-        c.close()
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mongo", action="store_true", help="同時檢查 MongoDB 連線")
     ap.add_argument("--port", type=int, default=5002)
     args = ap.parse_args()
     print(f"專案資料夾：{ROOT}\n")
@@ -209,10 +191,6 @@ def main():
     check_lkif()
     check_disk()
     check_port(args.port)
-    if args.mongo:
-        check_mongo()
-    else:
-        report("OK", "MongoDB（選用）", "未檢查（預設關閉；加 --mongo 參數可檢查）")
     print(f"\n結果：OK {results.count('OK')}、WARN {results.count('WARN')}、FAIL {results.count('FAIL')}")
     return 1 if "FAIL" in results else 0
 

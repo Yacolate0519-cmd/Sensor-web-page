@@ -97,18 +97,12 @@ DEFAULT_PARAMS = {
     "history_duration": "100",
     "refl_mode": "0",
     "distance_interval": "0.1",
-    "use_mongodb": "0",  # MongoDB 預設關閉
 }
 
 REFL_MODE_LABELS = {0: "0-漫反射", 1: "1-鏡面反射"}
 STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTERM", "sigbreak": "Ctrl+Break",
                 "sighup": "關閉終端機視窗", "console_close": "關閉主控台視窗",
                 "error": "錯誤", "timeout": "計時結束"}
-MONGO_URI = "mongodb://localhost:27017/"  # 與 db_logger.DatabaseLogger 的預設相同
-MONGO_HELP = ("找不到 MongoDB（localhost:27017）。資料仍會完整存成檔案。若要使用 MongoDB："
-              "1) 安裝 MongoDB Community Server（Windows 安裝時勾選 Install as a Service）"
-              "2) 確認服務「MongoDB」已啟動（services.msc）"
-              "3) 或關閉「同時寫入 MongoDB」")
 
 
 # ---------------------------------------------------------------------------
@@ -417,14 +411,6 @@ class MonitorService:
         self.sensors = {}
         self._reset_sensor_display()
 
-        # MongoDB 預設關閉：不 import、不連線，直到某次監測開啟「同時寫入 MongoDB」
-        self.db_logger = None
-        self.db_enabled = False
-        self.db_status = "disabled"  # disabled | connecting | connected | disconnected | error
-        self.db_message = "MongoDB 未啟用"
-        self.db_ready = threading.Event()
-        self.db_ready.set()
-
         # 模擬模式（--simulate）：只有列出的感測器改用 sim_devices，其餘仍走真實硬體
         self.simulated = set()
         self.sim_faults = False
@@ -544,7 +530,6 @@ class MonitorService:
                 "duration": duration,
                 "remaining": (max(0.0, duration - self.elapsed) if duration > 0 else None),
                 "params": dict(self.params),
-                "db": {"status": self.db_status, "message": self.db_message, "enabled": self.db_enabled},
                 "last_result": self.last_result,
                 "recording": self.recorder.summary() if self.recorder else None,
                 "simulated": sorted(self.simulated),
@@ -574,60 +559,6 @@ class MonitorService:
         data = np.concatenate(cols).tobytes() if cols else b""
         return start, len(cols), n_freq, data
 
-    # ---------------- 資料庫 ----------------
-    @staticmethod
-    def probe_mongodb(timeout_ms=3000):
-        """預檢用：只在使用者開啟 MongoDB 時才 import pymongo 並測試連線。回傳 (ok, 錯誤訊息)。"""
-        try:
-            import pymongo  # noqa: PLC0415  延遲匯入：關閉時完全不載入
-        except Exception as e:  # noqa: BLE001
-            return False, f"無法載入 pymongo：{e}"
-        client = None
-        try:
-            client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=timeout_ms,
-                                         connectTimeoutMS=timeout_ms)
-            client.admin.command("ping")
-            return True, None
-        except Exception as e:  # noqa: BLE001
-            return False, str(e).split(",")[0][:200]
-        finally:
-            if client is not None:
-                client.close()
-
-    def ensure_db_async(self):
-        """監測開始且開啟 MongoDB 時才建立 DatabaseLogger（背景執行，最多阻塞 5 秒）。"""
-        with self.lock:
-            if self.db_logger is not None and self.db_logger.is_connected():
-                self.db_status, self.db_message = "connected", "MongoDB 已連線"
-                return
-            self.db_status, self.db_message = "connecting", "MongoDB 連線中"
-            self.db_ready.clear()
-
-        def worker():
-            try:
-                from db_logger import DatabaseLogger  # noqa: PLC0415  延遲匯入 pymongo
-                logger = DatabaseLogger()
-                with self.lock:
-                    self.db_logger = logger
-                    if logger.is_connected():
-                        self.db_status, self.db_message = "connected", "MongoDB 已連線"
-                    else:
-                        self.db_status = "disconnected"
-                        self.db_message = "無法連接到 MongoDB，數據將不會被記錄到資料庫（檔案仍完整保存）。"
-                if not logger.is_connected():
-                    self.notify("warning", "資料庫警告", self.db_message)
-            except Exception as e:  # noqa: BLE001
-                with self.lock:
-                    self.db_logger = None
-                    self.db_status = "error"
-                    self.db_message = f"初始化資料庫記錄器失敗: {e}"
-                self.notify("error", "資料庫錯誤", self.db_message)
-            finally:
-                self.db_ready.set()
-            self.push_state()
-
-        threading.Thread(target=worker, name="db-init", daemon=True).start()
-
     # ---------------- 預檢 ----------------
     def check_rangefinder(self):
         """對應 main_csv.start_monitoring 的測距儀檢查。"""
@@ -656,7 +587,6 @@ class MonitorService:
                 "history_duration": float(str(raw.get("history_duration", "")).strip()),
                 "distance_interval": float(str(raw.get("distance_interval", "")).strip()),
                 "refl_mode": int(str(raw.get("refl_mode", "0")).split("-")[0].strip()),
-                "use_mongodb": str(raw.get("use_mongodb", "0")).strip().lower() in ("1", "true", "on", "yes"),
             }
         except (TypeError, ValueError) as e:
             raise ValueError(f"參數輸入錯誤: {e}") from None
@@ -722,14 +652,8 @@ class MonitorService:
         except OSError as e:
             errors.append(f"無法建立存檔資料夾 {DATA_DIR}: {e}")
 
-        mongo = None
-        if parsed and parsed["use_mongodb"] and not errors:
-            m_ok, m_err = self.probe_mongodb(3000)
-            mongo = {"ok": m_ok, "error": m_err}
-            if not m_ok:
-                mongo["message"] = MONGO_HELP
         return {"ok": not errors, "errors": errors, "warnings": warnings,
-                "enabled": enabled, "parsed": parsed, "disk": disk, "mongo": mongo}
+                "enabled": enabled, "parsed": parsed, "disk": disk}
 
     # ---------------- 開始 ----------------
     def start(self, raw, confirmed):
@@ -739,9 +663,6 @@ class MonitorService:
         pf = self.preflight(raw)
         if not pf["ok"]:
             return {"ok": False, "errors": pf["errors"], "warnings": pf["warnings"]}, 400
-        if pf["mongo"] and not pf["mongo"]["ok"]:
-            return {"ok": False, "needs_confirm": True, "mongo": pf["mongo"], "warnings": pf["warnings"],
-                    "errors": [MONGO_HELP]}, 409
         if pf["warnings"] and not confirmed:
             return {"ok": False, "needs_confirm": True, "warnings": pf["warnings"],
                     "enabled": pf["enabled"]}, 409
@@ -766,7 +687,7 @@ class MonitorService:
             "parameters": {
                 "sample_rate": p["sample_rate"], "update_interval_s": p["update_interval"],
                 "display_history_s": p["history_duration"], "distance_interval_s": p["distance_interval"],
-                "refl_mode": REFL_MODE_LABELS[p["refl_mode"]], "use_mongodb": p["use_mongodb"],
+                "refl_mode": REFL_MODE_LABELS[p["refl_mode"]],
                 "nfft": NFFT, "noverlap": NOVERLAP,
             },
             "enabled": dict(enabled),
@@ -783,7 +704,6 @@ class MonitorService:
             },
             "platform": {"os": platform.platform(), "python": platform.python_version()},
             "spectrogram": None,
-            "mongodb": None,
         }
         try:
             recorder = ExperimentRecorder(experiment_id, info)
@@ -812,7 +732,6 @@ class MonitorService:
             self.spectrogram_job = None
             self.write_failures = set()
             self.params = {k: str(raw.get(k, DEFAULT_PARAMS[k])) for k in DEFAULT_PARAMS}
-            self.params["use_mongodb"] = "1" if p["use_mongodb"] else "0"
             self.enabled = enabled
             self.duration = p["duration"]
             self.sample_rate = p["sample_rate"]
@@ -829,9 +748,6 @@ class MonitorService:
             self.start_time = start_ts
             self.stop_event = threading.Event()
             self.finalizing = False
-            self.db_enabled = p["use_mongodb"]
-            if not self.db_enabled:
-                self.db_status, self.db_message = "disabled", "MongoDB 未啟用"
             self._reset_sensor_display()
             parts = [name for key, name in (("temp", "溫度"), ("audio", "音訊"), ("distance", "距離"))
                      if enabled[key]]
@@ -847,8 +763,6 @@ class MonitorService:
                 self.sensors["distance"].update(text="未啟用", level="off")
             stop_event = self.stop_event
             run_id = self.run_id
-        if p["use_mongodb"]:
-            self.ensure_db_async()
         if self.simulated:
             self.sim_temp = sim_devices.SimTemperature(faults=self.sim_faults)
 
@@ -941,7 +855,6 @@ class MonitorService:
         with self.lock:
             start_ts = self.start_time
             sr = self.sample_rate
-            use_db = self.db_enabled
         recorder.update(status="raw_saved", end_time=iso_now(end_ts), end_time_unix=end_ts,
                         duration_s=round(end_ts - start_ts, 3), stop_reason=STOP_REASONS.get(reason, reason))
         exp_id = recorder.experiment_id
@@ -958,24 +871,6 @@ class MonitorService:
             messages.append(f"音訊 {audio['seconds']:.1f} 秒")
             wav_path = recorder.path(audio["name"])
             n_cols = chunked_spectrogram.n_spec_columns(audio["frames"] * audio["channels"])
-            mongo_note = None
-            want_db = False
-            est = chunked_spectrogram.estimate_mongo_doc_bytes(n_cols, NFFT // 2 + 1)
-            if use_db:
-                self.db_ready.wait(timeout=10)
-                with self.lock:
-                    logger = self.db_logger
-                if not (logger and logger.is_connected()):
-                    mongo_note = {"written": False, "reason": "MongoDB 未連線"}
-                    self.notify("warning", "資料庫警告", "MongoDB 未連線，頻譜未寫入資料庫（資料仍完整保存在檔案中）。")
-                elif est > chunked_spectrogram.MONGO_DOC_LIMIT * 0.95:
-                    mongo_note = {"written": False, "reason": "文件超過 16MB 上限", "estimated_bytes": est}
-                    self.notify("warning", "MongoDB 已略過",
-                                f"本次頻譜資料約 {est / 1024 ** 2:.0f} MB，超過 MongoDB 單筆 16 MB 上限"
-                                f"（約 {audio['seconds']:.0f} 秒音訊；上限約 50 秒），未寫入資料庫。"
-                                "資料仍完整保存在 WAV 與頻譜 CSV 檔案中。")
-                else:
-                    want_db = True
             if n_cols >= 2:
                 csv_name = f"spectrogram_{exp_id}.csv"
                 # 以相對路徑呼叫（main() 已 chdir 到專案目錄），_metadata.txt 的 Data File 欄位才與原程式相同
@@ -990,15 +885,13 @@ class MonitorService:
 
                 try:
                     r = chunked_spectrogram.save_spectrogram_csv_from_wav(
-                        wav_path, csv_rel, exp_id, sample_rate=sr, keep_full_spec=want_db, progress=progress)
+                        wav_path, csv_rel, exp_id, sample_rate=sr, progress=progress)
                     recorder.add_file("spectrogram", csv_name, rows=r["n_times"], freq_bins=r["n_freqs"])
                     recorder.add_file("spectrogram_metadata", os.path.basename(r["metadata"]))
                     recorder.update(spectrogram={"status": "done", "rows": r["n_times"],
                                                  "seconds_to_generate": round(r["seconds"], 2)})
                     self._set_spec_job("done", 1.0)
                     messages.append(f"數據已儲存至: {csv_name}")
-                    if want_db:
-                        mongo_note = self._write_mongo(exp_id, sr, audio["seconds"], r)
                 except Exception as e:  # noqa: BLE001
                     traceback.print_exc()
                     recorder.update(spectrogram={"status": "error", "error": str(e)})
@@ -1008,8 +901,6 @@ class MonitorService:
                                 f"uv run python app/chunked_spectrogram.py {recorder.rel_dir()}")
             else:
                 recorder.update(spectrogram={"status": "skipped", "reason": "音訊太短"})
-            if mongo_note:
-                recorder.update(mongodb=mongo_note)
         elif self.enabled.get("audio"):
             self.notify("warning", "警告", "沒有錄製到音訊數據")
 
@@ -1030,26 +921,6 @@ class MonitorService:
                 pct = int(round((progress or 0) * 100))
                 self.status_text = f"頻譜 CSV 產生中… {pct}%"
         self.push_state()
-
-    def _write_mongo(self, exp_id, sr, audio_seconds, r):
-        with self.lock:
-            logger = self.db_logger
-        end_time = datetime.datetime.utcnow()
-        start_time = end_time - datetime.timedelta(seconds=audio_seconds)
-        try:
-            logger.log_spectrogram(experiment_id=exp_id, start_time=start_time, end_time=end_time,
-                                   sample_rate=sr, nfft=NFFT, noverlap=NOVERLAP,
-                                   bins=r["bins"], freqs=r["freqs"], spec=r["spec"])
-            # log_spectrogram 會自行吞掉例外，因此回頭確認文件真的寫進去了
-            written = logger.db.spectrograms.count_documents({"experiment_id": exp_id}, limit=1) > 0
-        except Exception as db_error:  # noqa: BLE001
-            written = False
-            print(f"寫入 MongoDB 失敗: {db_error}")
-        if written:
-            print("頻譜數據已成功寫入 MongoDB。")
-            return {"written": True, "collection": "sensor_data.spectrograms"}
-        self.notify("warning", "資料庫錯誤", "寫入頻譜數據到 MongoDB 失敗（詳見伺服器輸出），資料仍完整保存在檔案中。")
-        return {"written": False, "reason": "寫入失敗"}
 
     # ---------------- Workers ----------------
     def _timer_worker(self, stop_event, duration):
@@ -1351,13 +1222,6 @@ class MonitorService:
                 print("正在產生頻譜 CSV（原始資料已安全存檔）。若要略過可再按一次 Ctrl+C，"
                       "之後用 uv run python app/chunked_spectrogram.py <實驗資料夾> 補產生。")
             time.sleep(0.1)
-        with self.lock:
-            logger = self.db_logger
-        if logger:
-            try:
-                logger.close()
-            except Exception:  # noqa: BLE001
-                pass
         print("已關閉。")
 
 
@@ -1515,7 +1379,7 @@ def main():
         except Exception:  # noqa: BLE001
             traceback.print_exc()
     print(f"感測器整合系統（網頁版）: http://{args.host}:{args.port}")
-    print("MongoDB 預設關閉；資料一律存到 Sensor_Data/EXP_<時間>/。按 Ctrl+C 結束。")
+    print("資料一律存到 Sensor_Data/EXP_<時間>/。按 Ctrl+C 結束。")
     if service.simulated:
         print(f"*** 模擬模式：{', '.join(sorted(service.simulated))} 使用模擬資料（不是真實量測）"
               f"{'，含故障模擬' if service.sim_faults else ''} ***")

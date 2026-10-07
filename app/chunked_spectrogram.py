@@ -27,7 +27,6 @@ NFFT = 256
 NOVERLAP = 128
 HOP = NFFT - NOVERLAP
 TIME_INTERVAL = 0.05  # 與 save_spectrogram_to_csv 相同
-MONGO_DOC_LIMIT = 16 * 1024 * 1024
 
 
 def wav_params(path):
@@ -75,26 +74,6 @@ def iter_spec_blocks(path, fs, cols_per_block=4096):
             yield col, np.asarray(spec, dtype=np.float64), np.asarray(freqs, dtype=np.float64)
             carry = carry[nb * HOP:]
             col += nb
-
-
-def estimate_mongo_doc_bytes(n_cols, n_freq):
-    """估計 DatabaseLogger.log_spectrogram 文件的 BSON 大小（spec 為 n_freq 個長度 n_cols 的陣列）。"""
-    def array_bytes(n):
-        if n <= 0:
-            return 5
-        # 每個 double 元素：type(1) + key(十進位索引字串 + '\0') + 8
-        digits = 0
-        lo = 0
-        d = 1
-        while lo < n:
-            hi = min(n, 10 ** d)
-            digits += (hi - lo) * d
-            lo = hi
-            d += 1
-        return 5 + n * 10 + digits
-    inner = array_bytes(n_cols)
-    spec_bytes = 5 + n_freq * (inner + 2 + len(str(n_freq)))
-    return spec_bytes + array_bytes(n_cols) + array_bytes(n_freq) + 512
 
 
 def bins_slice(c0, c1, fs):
@@ -187,11 +166,10 @@ def write_metadata(filename, experiment_id, timestamp, sample_rate, n_times, n_f
 
 def save_spectrogram_csv_from_wav(wav_path, filename, experiment_id, sample_rate=None,
                                   save_power=True, save_snr=True, cols_per_block=4096,
-                                  rows_per_block=2048, keep_full_spec=False, progress=None):
+                                  rows_per_block=2048, progress=None):
     """分塊版 save_spectrogram_to_csv。
 
-    回傳 dict：n_times、n_freqs、n_spec_cols、metadata、seconds，以及 keep_full_spec=True 時的
-    (spec, freqs, bins)（給 MongoDB 用；只有短錄音才該要求）。
+    回傳 dict：n_times、n_freqs、n_spec_cols、metadata、seconds。
     """
     t_start = time.time()
     params = wav_params(wav_path)
@@ -221,7 +199,6 @@ def save_spectrogram_csv_from_wav(wav_path, filename, experiment_id, sample_rate
         f.truncate(m * row_bytes)
     abs_max = np.zeros(n_freq)
     abs_sum = np.zeros(n_freq)
-    full_blocks = [] if keep_full_spec else None
     freqs = None
 
     def mm_window(offset_row, rows, mode):
@@ -237,8 +214,6 @@ def save_spectrogram_csv_from_wav(wav_path, filename, experiment_id, sample_rate
             freqs = fq
             nb = spec.shape[1]
             c1 = c0 + nb
-            if full_blocks is not None:
-                full_blocks.append(spec)
             bx = bins_slice(c0, c1, fs)
             if prev_x is None:
                 xs, ys = bx, spec
@@ -318,10 +293,6 @@ def save_spectrogram_csv_from_wav(wav_path, filename, experiment_id, sample_rate
     print(f"元數據已儲存到 {meta}")
     result = {"n_times": m, "n_freqs": n_freq, "n_spec_cols": n_cols, "metadata": meta,
               "seconds": time.time() - t_start}
-    if full_blocks is not None:
-        result["spec"] = np.concatenate(full_blocks, axis=1)
-        result["freqs"] = freqs
-        result["bins"] = bins_slice(0, n_cols, fs)
     return result
 
 

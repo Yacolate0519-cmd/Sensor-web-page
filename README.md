@@ -1,7 +1,7 @@
 # Sensor-web-page
 
 ## 專案簡介
-Sensor-web-page 是一套多感測器資料整合與即時監控平台，支援溫度感測器（RS485/Modbus）、音訊監測（麥克風）、AvaSpec 光譜儀、KEYENCE LK-G5000 雷射測距儀等多種裝置。提供 Tkinter 圖形化操作介面與 Flask SSE 網頁即時監控，並可將量測資料寫入 MongoDB，適用於實驗室、工業現場等多感測應用。
+Sensor-web-page 是一套多感測器資料整合與即時監控平台，支援溫度感測器（RS485/Modbus）、音訊監測（麥克風）、AvaSpec 光譜儀、KEYENCE LK-G5000 雷射測距儀等多種裝置。提供 Tkinter 圖形化操作介面與 Flask SSE 網頁即時監控；量測資料一律以檔案形式存放，適用於實驗室、工業現場等多感測應用。
 
 ---
 
@@ -12,7 +12,6 @@ Sensor-web-page 是一套多感測器資料整合與即時監控平台，支援�
 - **雷射測距儀**：KEYENCE LK-G5000 單次/連續量測、資料儲存與顯示。
 - **圖形化操作介面**：Tkinter 整合多感測器監控、參數設定、即時圖表。
 - **網頁即時監控**：Flask SSE 多圖表即時資料推送，支援多用戶瀏覽。
-- **資料庫記錄**：透過 `app/db_logger.py` 將量測資料與頻譜寫入 MongoDB。
 
 ---
 
@@ -30,8 +29,7 @@ Sensor-web-page/
 │   ├── templates/             #   前端 HTML（monitor.html 等）
 │   ├── static/                #   前端 JS / CSS
 │   ├── chunked_spectrogram.py #   由 WAV 分塊產生頻譜 CSV
-│   ├── sim_devices.py         #   --simulate 模擬感測器
-│   └── db_logger.py           #   MongoDB 寫入模組（DatabaseLogger）
+│   └── sim_devices.py         #   --simulate 模擬感測器
 ├── sensors/                   # 感測器驅動套件
 │   ├── temp_py_package/       #   溫度感測器通訊協定與驅動
 │   ├── signal_package/        #   音訊錄音、處理、儲存
@@ -122,13 +120,10 @@ source .venv/bin/activate     # macOS / Linux
 | `flask` | 網頁伺服器與 SSE 推送（`main.py` → `app/web_monitor.py`） |
 | `numpy` | 訊號與光譜數值運算 |
 | `matplotlib` | 即時圖表繪製（含 Tkinter backend） |
-| `pymongo` | MongoDB 寫入與查詢（`bson` 隨此套件附帶） |
 | `pyserial` | RS485/Modbus 序列埠通訊 |
 | `pyaudio` | 麥克風錄音 |
 | `psutil` | 系統資源狀態輸出（CPU／記憶體使用率） |
 | `pyqt5`（選裝，`spectrometer` extra） | 只有舊的光譜儀腳本 `legacy/spectrum_main.py` 需要；網頁版不需要。需要時執行 `uv sync --extra spectrometer`。注意：新版 PyQt5-Qt5 沒有 Windows wheel，所以不列為預設依賴，否則 Windows 上 `uv sync` 會失敗 |
-
-> `bson` 不要另外從 PyPI 安裝，PyPI 上的獨立 `bson` 套件會與 `pymongo` 內建的版本衝突。
 
 ### 從 Conda 遷移
 
@@ -167,7 +162,7 @@ uv run python main.py --help       # 所有參數
 - 監測在伺服器端進行，關掉或重新整理網頁不會中斷；重新開啟頁面會自動復原目前畫面。
 - 在終端機按 `Ctrl+C` 關閉伺服器：會先停止監測、關檔、產生頻譜 CSV 並釋放硬體。
 - 圖表不依賴 CDN，實驗室電腦離線也能使用。
-- 第一次在新電腦（特別是 Windows 筆電）使用前，先跑自我檢查：`uv run python scripts/windows_selfcheck.py`（加 `--mongo` 會一併檢查 MongoDB）。
+- 第一次在新電腦（特別是 Windows 筆電）使用前，先跑自我檢查：`uv run python scripts/windows_selfcheck.py`。
 
 #### 存檔內容（整場實驗完整保存）
 按下「開始監測」就建立 `Sensor_Data/EXP_YYYYmmdd_HHMMSS/`，資料**邊錄邊寫**（每筆都 flush，當機或斷電也只會少最後一瞬間）：
@@ -185,11 +180,6 @@ uv run python main.py --help       # 所有參數
 - 頻譜 CSV 以分塊方式計算，記憶體用量約 150 MB、與錄音長度無關；1 小時錄音約 6 秒產生完。若中途失敗，可事後補產生：`uv run python app/chunked_spectrogram.py Sensor_Data/EXP_YYYYmmdd_HHMMSS`。
 - 「頻譜圖顯示長度」只影響畫面（上限 600 秒），不影響存檔。
 
-#### MongoDB（預設關閉）
-- 設定區的「同時寫入 MongoDB」預設關閉；關閉時程式完全不會載入 pymongo 或連線，沒裝 MongoDB 的電腦也能正常使用。
-- 開啟後，按「開始監測」時會先測試連線（最多 3 秒）；連不上會顯示說明，可選擇「關閉 MongoDB 繼續」。
-- MongoDB 單筆文件上限 16 MB，約等於 50 秒音訊的頻譜；超過時會**跳通知並略過**寫入（資料仍完整在檔案中），不會靜默失敗。
-
 #### 模擬模式（沒有硬體時測試完整流程）
 ```sh
 uv run python main.py --simulate temp,distance            # 溫度、測距儀用模擬資料，音訊仍用麥克風
@@ -198,7 +188,6 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 模擬資料會清楚標示：頁面頂部顯示「模擬模式」、對應卡片標「模擬」、`experiment_<id>.json` 記錄 `"simulated"`，實驗資料夾另有 `SIMULATED.txt`。**不要把模擬資料夾當成真實量測使用。**
 
 #### 常見問題排除
-- **MongoDB 連不到**：資料仍會完整存成檔案。若要使用 MongoDB：1) 安裝 MongoDB Community Server（Windows 安裝時勾選 Install as a Service）2) 執行 `services.msc` 確認服務「MongoDB」已啟動 3) 或關閉「同時寫入 MongoDB」。
 - **找不到 COM 埠**：確認 USB 轉 RS485 轉換器已接上並安裝驅動（常見晶片 CH340、FTDI、CP210x、PL2303），在「裝置管理員 → 連接埠 (COM 和 LPT)」確認出現 `COMx`；也可以在欄位直接輸入埠名。
 - **麥克風錄到全為 0／沒有音訊設備**：Windows「設定 → 隱私權與安全性 → 麥克風」開啟「麥克風存取」與「讓桌面應用程式存取麥克風」；確認輸入裝置沒被停用，並關閉占用麥克風的程式（Teams、Zoom）。macOS 則在「系統設定 → 隱私權與安全性 → 麥克風」允許終端機。
 - **LKIF2.dll 載入失敗／測距儀初始化失敗**：需要 64 位元 Python 搭配 64 位元 LKIF2.dll（專案附的版本），`CmnLib.dll`、`KeyUsbDrv.dll` 要一起放在 `drivers/`；安裝 KEYENCE 的 USB 驅動並確認裝置管理員中有控制器。macOS 無法使用測距儀。
@@ -214,57 +203,6 @@ uv sync --extra spectrometer && uv run python legacy/spectrum_main.py   # 單一
 uv run python legacy/rangefinder_main.py  # 單一測距儀
 uv run python legacy/main_web.py          # 早期 Flask SSE 範例：http://localhost:5000/chart_test
 uv run python legacy/check_db.py          # 列出 MongoDB 最新一筆紀錄
-```
-
----
-
-## 資料庫（MongoDB）
-
-- 預設連線字串：`mongodb://localhost:27017/`，資料庫名稱 `sensor_data`。
-- 集合：`measurements`（單點量測，如溫度、測距）、`spectrograms`（音訊頻譜）。
-- 連線設定目前寫在 `app/db_logger.py` 的 `DatabaseLogger.__init__` 預設參數，以及 `legacy/check_db.py` 的 `MONGO_URI` 常數；若要連到其他主機請修改這兩處。
-- 若 MongoDB 未啟動，`DatabaseLogger` 會印出連線失敗訊息並停用寫入，不會中斷感測器主程式。
-
-### 安裝並啟動 MongoDB（macOS / Homebrew）
-
-```sh
-brew tap mongodb/brew
-brew trust --formula mongodb/brew/mongodb-community        # 新版 Homebrew 需先信任第三方 tap
-brew trust --formula mongodb/brew/mongodb-database-tools   # 相依套件
-brew trust --formula mongodb/brew/mongodb-enterprise       # 僅供 brew 檢查衝突，不會安裝
-brew install mongodb-community
-brew services start mongodb-community      # 開機自動啟動
-```
-
-常用管理指令：
-
-| 動作 | 指令 |
-|---|---|
-| 啟動（並設為開機啟動） | `brew services start mongodb-community` |
-| 停止 | `brew services stop mongodb-community` |
-| 重新啟動 | `brew services restart mongodb-community` |
-| 查看狀態 | `brew services info mongodb-community` |
-| 確認埠號有在監聽 | `lsof -nP -iTCP:27017 -sTCP:LISTEN` |
-| 進入資料庫 shell | `mongosh` |
-| 查看日誌 | `tail -f /opt/homebrew/var/log/mongodb/mongo.log` |
-
-資料存放於 `/opt/homebrew/var/mongodb`，日誌位於 `/opt/homebrew/var/log/mongodb/mongo.log`。
-
-### 安裝並啟動 MongoDB（Windows）
-
-1. 下載並執行 [MongoDB Community Server MSI 安裝程式](https://www.mongodb.com/try/download/community)。
-2. 安裝精靈中勾選 **Install MongoDB as a Service**，即會註冊為 Windows 服務並自動啟動。
-3. 以系統管理員身分於 PowerShell 管理服務：
-   ```powershell
-   net start MongoDB     # 啟動
-   net stop MongoDB      # 停止
-   ```
-
-### 驗證連線
-
-```sh
-mongosh --quiet --eval 'db.runCommand({ping:1})'   # 預期輸出 { ok: 1 }
-uv run python legacy/check_db.py                   # 用專案程式碼實際查詢
 ```
 
 ---
@@ -297,7 +235,7 @@ uv run python legacy/check_db.py                   # 用專案程式碼實際查
 
 | 功能 | Windows | macOS / Linux |
 |---|---|---|
-| 溫度感測、音訊監測、網頁監控、MongoDB | ✅ | ✅ |
+| 溫度感測、音訊監測、網頁監控 | ✅ | ✅ |
 | 雷射測距儀（`rangefinder`） | ✅ | ❌ 使用 `ctypes.WinDLL` 載入 `LKIF2.dll`，僅限 Windows |
 | 光譜儀（`spectrum_py_package`） | ✅ 需 `drivers/avaspecx64.dll` | ⚠️ 需自行安裝 AvaSpec 原生函式庫（macOS：`/usr/local/lib/libavs.0.dylib`；Linux：`/usr/local/lib/libavs.so.0`），否則匯入即失敗 |
 
@@ -323,10 +261,6 @@ Python 套件本身在三大平台皆可安裝，上述限制來自硬體廠商�
   - 請確認麥克風已正確連接，並安裝對應驅動。macOS 另需在「系統設定 → 隱私權與安全性 → 麥克風」授權終端機或 VS Code。
 - **Q: Flask 頁面無法顯示即時資料？**
   - 請確認感測器已連接，且後端程式無錯誤。
-- **Q: MongoDB 連線失敗？**
-  - 請確認本機 MongoDB 服務已啟動（見上方「安裝並啟動 MongoDB」），或修改 `app/db_logger.py` / `legacy/check_db.py` 中的連線字串。
-- **Q: `brew services` 顯示 started，但 27017 沒有服務在聽？**
-  - 服務起來後隨即崩潰。查日誌 `tail -50 /opt/homebrew/var/log/mongodb/mongo.log`。若看到 `Wrong mongod version` / `invalid featureCompatibilityVersion`，表示資料目錄是舊版 MongoDB 留下的，新版無法直接掛載。確認 `/opt/homebrew/var/mongodb` 內沒有需要保留的資料後，將該目錄改名備份再重建空目錄，然後重新啟動服務。
 
 ---
 
