@@ -185,9 +185,15 @@ uv run python main.py --help       # 所有參數
 #### 模擬模式（沒有硬體時測試完整流程）
 ```sh
 uv run python main.py --simulate temp,distance            # 溫度、測距儀用模擬資料，音訊仍用麥克風
+uv run python main.py --simulate spectrometer             # 只模擬光譜儀（別名 spectrum / spec / avaspec）
 uv run python main.py --simulate all --simulate-faults    # 全部模擬，並定期模擬斷線／恢復
 ```
 模擬資料會清楚標示：頁面頂部顯示「模擬模式」、對應卡片標「模擬」、`experiment_<id>.json` 記錄 `"simulated"`，實驗資料夾另有 `SIMULATED.txt`。**不要把模擬資料夾當成真實量測使用。**
+
+#### 光譜儀（AvaSpec-ULS2048L）
+- 網頁新增 **Optical Spectrum** 卡片：上方熱圖（x=時間、y=波長、顏色=counts，色階自動取近期 1%–99% 百分位），下方為最新一筆即時光譜（標示前 3 高峰；≥65000 counts 顯示飽和警告）。左側「光譜儀」區塊可設量測間隔（預設 0.5 秒）與積分時間（預設 50 ms）。
+- 存檔 `spectrometer_<id>.csv`：檔頭 `Timestamp,Elapsed(s),Status,` 後接 2048 個波長（nm），之後每筆一列原始 counts（未扣暗光）；失敗列強度留空、Status 為原因。約 100 MB／小時（預設設定）。波長範圍、積分時間等寫在 `experiment_<id>.json` 的 `spectrometer` 欄位。
+- 沒有硬體：用 `--simulate spectrometer`（或 `all`）。真實模式需要：Windows 64 位元、`drivers/avaspecx64.dll`（AvaSpec 官方驅動）、PyQt5（`uv sync --extra spectrometer`，驅動 import 時需要）、USB 接上光譜儀。缺任何一項時預檢會停用光譜儀並在狀態面板顯示原因，不影響其他感測器。
 
 #### 常見問題排除
 - **找不到 COM 埠**：確認 USB 轉 RS485 轉換器已接上並安裝驅動（常見晶片 CH340、FTDI、CP210x、PL2303），在「裝置管理員 → 連接埠 (COM 和 LPT)」確認出現 `COMx`；也可以在欄位直接輸入埠名。

@@ -214,6 +214,7 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .help-tip p { margin: 0 0 6px; }
 .help-tip p:last-child { margin-bottom: 0; }
 .help-tip b { font-weight: 600; color: var(--text); }
+#spec-tip { width: 240px; }
 .help-btn:hover + .help-tip, .help-btn:focus-visible + .help-tip { visibility: visible; opacity: 1; }
 
 /* ---------- 存檔資訊列 ---------- */
@@ -289,6 +290,8 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .chart-note { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .canvas-wrap { position: relative; width: 100%; height: 240px; }
 .canvas-spec { height: clamp(300px, 42vh, 460px); }
+.canvas-opt { height: clamp(240px, 34vh, 360px); }
+.canvas-opt-live { height: 210px; }
 .canvas-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 /* ---------- 通知 ---------- */
@@ -336,6 +339,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
   .num { font-size: 26px; }
   .canvas-wrap { height: 200px; }
   .canvas-spec { height: 300px; }
+  .canvas-opt { height: 240px; }
+  .canvas-opt-live { height: 190px; }
   .brand h1 { font-size: 14px; }
   .chip { padding: 3px 8px; }
 }

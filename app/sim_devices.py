@@ -16,7 +16,7 @@ import numpy as np
 
 from rangefinder.constants import RC_OK
 
-SIM_KEYS = ("temp", "distance", "audio")
+SIM_KEYS = ("temp", "distance", "audio", "spectrometer")
 FAULT_EVERY_S = 45     # 每 45 秒進入一次故障
 FAULT_LENGTH = 12      # 連續失敗 12 次（超過斷線門檻 10 次）
 FAULT_STEP = 4         # 溫度故障期間每 4 次失敗換一種原因，方便在 UI 看到不同的失敗分類
@@ -29,11 +29,12 @@ def parse_simulate(value):
     items = {v.strip().lower() for v in value.split(",") if v.strip()}
     if "all" in items:
         return set(SIM_KEYS)
-    alias = {"temperature": "temp", "rangefinder": "distance", "mic": "audio"}
+    alias = {"temperature": "temp", "rangefinder": "distance", "mic": "audio",
+             "spectrum": "spectrometer", "spec": "spectrometer", "avaspec": "spectrometer"}
     items = {alias.get(v, v) for v in items}
     unknown = items - set(SIM_KEYS)
     if unknown:
-        raise ValueError(f"未知的模擬項目：{', '.join(sorted(unknown))}（可用：temp, distance, audio, all）")
+        raise ValueError(f"未知的模擬項目：{', '.join(sorted(unknown))}（可用：temp, distance, audio, spectrometer, all）")
     return items
 
 
@@ -48,6 +49,24 @@ DISTANCE_FAULT_EACH_S = 4
 # 音訊故障排程（每 FAULT_EVERY_S 秒一輪，與溫度/距離錯開）：先全 0 一段，再丟 1 秒例外
 AUDIO_SILENT_AT, AUDIO_SILENT_S = 15, 8   # 全 0 滿 3 秒才觸發 no_data，因此約可看到 5 秒
 AUDIO_ERROR_AT, AUDIO_ERROR_S = 30, 4
+# 光譜儀故障：每輪從第 FAULT_EVERY_S 秒起，依序維持 SPEC_FAULT_EACH_S 秒「等待超時」與「裝置中斷」
+# （訊息文字與真實驅動丟出的 RuntimeError 相同，web_monitor.classify_spectrometer_error 才會分到同樣的原因）
+SPEC_FAULTS = ("等待超時（模擬：光譜儀沒有回傳資料）", "沒有找到光譜儀!（模擬：USB 裝置中斷）")
+SPEC_FAULT_EACH_S = 5
+
+# AvaSpec-ULS2048L 的規格：2048 像素、約 175.53–1321.87 nm、原始 counts 上限 65535（模擬飽和）
+SPEC_PIXELS = 2048
+SPEC_WL_RANGE = (175.53, 1321.87)
+SPEC_BASELINE = 230.0     # 背景 counts（未扣暗光）
+SPEC_SATURATION = 65535
+SPEC_REF_INTEGRATION_MS = 50.0  # 峰強以 50 ms 積分時間為基準，其他積分時間等比例縮放
+# 發射峰：(中心 nm, 基準峰強 counts, 高斯 σ nm, 起伏頻率 Hz)。Na 589、Hα 656、O 777 加上 3 條 300–500 nm 的峰
+SPEC_PEAKS = (
+    (309.0, 6000.0, 1.4, 0.07), (391.4, 9000.0, 1.6, 0.11), (486.1, 7500.0, 1.3, 0.05),
+    (589.0, 30000.0, 1.2, 0.09), (656.3, 20000.0, 1.5, 0.06), (777.4, 24000.0, 1.8, 0.04),
+)
+SPEC_SPIKE_PROB = 0.06    # 每筆有此機率其中一條強峰突然放大（模擬放電尖峰，可能飽和）
+SPEC_SPIKE_PEAKS = (3, 4, 5)  # 會出尖峰的是 Na、Hα、O 三條強峰
 
 
 class _FaultClock:
@@ -187,6 +206,44 @@ class SimAudioRecorder:
             if AUDIO_SILENT_AT <= phase < AUDIO_SILENT_AT + AUDIO_SILENT_S:
                 return np.zeros(n, dtype=np.int16)  # 模擬麥克風靜音／權限未開（連續 3 秒全 0 觸發 no_data）
         return np.clip(x, -32768, 32767).astype(np.int16)
+
+    def close(self):
+        pass
+
+
+class SimSpectrometer:
+    """取代 spectrometer_driver.AvaSpecDevice：wavelength、measure(integration_ms)、close() 介面相同。
+
+    背景約 230 counts + 雜訊，疊加 SPEC_PEAKS 的高斯發射峰；峰強隨時間緩慢起伏、偶有尖峰，上限 65535。
+    波長軸 175.53–1321.87 nm、2048 點，略帶非線性（與真實的多項式波長校正類似）。
+    """
+
+    def __init__(self, faults=False, seed=None):
+        self.faults = faults
+        self.rng = np.random.default_rng(seed)
+        self.t0 = time.time()
+        x = np.linspace(0.0, 1.0, SPEC_PIXELS)
+        lo, hi = SPEC_WL_RANGE
+        self.wavelength = lo + (hi - lo) * (x + 0.012 * x * (1 - x))  # 端點不變、單調遞增
+        self._phase = self.rng.uniform(0, 2 * np.pi, len(SPEC_PEAKS))
+
+    def measure(self, integration_ms=50.0):
+        time.sleep(integration_ms / 1000.0 + 0.02)  # 模擬積分與傳輸時間
+        t = time.time() - self.t0
+        if self.faults and t >= FAULT_EVERY_S:
+            k = int((t % FAULT_EVERY_S) // SPEC_FAULT_EACH_S)
+            if k < len(SPEC_FAULTS):
+                raise RuntimeError(SPEC_FAULTS[k])
+        y = SPEC_BASELINE + self.rng.normal(0.0, 6.0, SPEC_PIXELS)
+        spike = int(self.rng.choice(SPEC_SPIKE_PEAKS)) if self.rng.random() < SPEC_SPIKE_PROB else -1
+        for i, (center, amp, sigma, freq) in enumerate(SPEC_PEAKS):
+            level = amp * (0.7 + 0.3 * math.sin(2 * math.pi * freq * t + self._phase[i]))
+            level *= 1.0 + self.rng.normal(0.0, 0.03)
+            if i == spike:
+                level *= self.rng.uniform(2.4, 3.4)
+            y += level * np.exp(-0.5 * ((self.wavelength - center) / sigma) ** 2)
+        y = SPEC_BASELINE + (y - SPEC_BASELINE) * (integration_ms / SPEC_REF_INTEGRATION_MS)
+        return np.clip(y, 0.0, SPEC_SATURATION)
 
     def close(self):
         pass

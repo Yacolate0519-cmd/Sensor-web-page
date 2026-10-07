@@ -93,6 +93,29 @@
             <span class="field-hint">程式讀取測距儀的頻率，0.1 秒＝每秒 10 筆，決定存檔資料密度</span>
           </label>
         </section>
+
+        <section class="group">
+          <h2>光譜儀</h2>
+          <div class="grid-2">
+            <div class="field">
+              <div class="field-label-row">
+                <label class="field-label" for="spec_interval">量測間隔</label>
+                <button type="button" class="help-btn" aria-label="光譜儀參數說明" aria-describedby="spec-tip">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.95 1.95 0 1 1 2.9 1.7c-.7.4-1 .8-1 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="11.5" r=".85" fill="currentColor"/></svg>
+                </button>
+                <div class="help-tip" id="spec-tip" role="tooltip">
+                  <p><b>量測間隔</b>：每隔多久量一筆光譜。</p>
+                  <p><b>積分時間</b>：越長訊號越強，但峰值超過 65535 counts 會飽和。</p>
+                </div>
+              </div>
+              <div class="input-unit"><input id="spec_interval" name="spec_interval" inputmode="decimal" value="0.5"><span>秒</span></div>
+            </div>
+            <label class="field">
+              <span class="field-label">積分時間</span>
+              <div class="input-unit"><input id="spec_integration_ms" name="spec_integration_ms" inputmode="decimal" value="50"><span>ms</span></div>
+            </label>
+          </div>
+        </section>
       </form>
 
       <div class="controls">
@@ -100,7 +123,7 @@
         <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止監測</button>
       </div>
 
-      <!-- 感測器狀態：每個感測器一列（key 對應 /api/state 的 sensors；光譜儀尚未整合，先預留「未接入」） -->
+      <!-- 感測器狀態：每個感測器一列（key 對應 /api/state 的 sensors；伺服器沒有該 key 時顯示「未接入」） -->
       <section class="group sensor-panel" id="sensor-panel" aria-label="感測器狀態">
         <h2>感測器狀態</h2>
         <div class="sensor-row" data-sensor="temp">
@@ -119,7 +142,7 @@
           <div class="sr-detail" hidden></div>
         </div>
         <div class="sensor-row" data-sensor="spectrometer">
-          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">光譜儀</span><span class="sr-badge" data-tone="neutral">未接入</span></div>
+          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">光譜儀</span><span class="sim-tag" data-sim="spectrometer" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
           <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
           <div class="sr-detail" hidden></div>
         </div>
@@ -142,6 +165,7 @@
             <li id="lamp-temp"><span class="dot" data-level="idle"></span>溫度</li>
             <li id="lamp-audio"><span class="dot" data-level="idle"></span>音訊</li>
             <li id="lamp-distance"><span class="dot" data-level="idle"></span>距離</li>
+            <li id="lamp-spectrometer"><span class="dot" data-level="idle"></span>光譜儀</li>
           </ul>
           <p class="stat-sub" id="audio-sub">音訊：--</p>
         </article>
@@ -160,6 +184,12 @@
         <figure class="chart chart-spec">
           <figcaption><h3>Spectrogram <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
           <div class="canvas-wrap canvas-spec"><canvas id="cv-spec"></canvas></div>
+        </figure>
+        <!-- 光譜儀：上為光譜熱圖（時間 × 波長），下為最新一筆的即時光譜；放在 Spectrogram 之後，兩者同為「時間-頻率/波長」熱圖 -->
+        <figure class="chart chart-spec">
+          <figcaption><h3>Optical Spectrum <span class="sim-tag" data-sim="spectrometer" hidden>模擬</span></h3><span class="chart-note" id="opt-note">AvaSpec-ULS2048L</span></figcaption>
+          <div class="canvas-wrap canvas-opt"><canvas id="cv-opt"></canvas></div>
+          <div class="canvas-wrap canvas-opt-live"><canvas id="cv-opt-live"></canvas></div>
         </figure>
         <figure class="chart">
           <figcaption><h3>Temperature <span class="sim-tag" data-sim="temp" hidden>模擬</span></h3><span class="chart-note" id="temp-note">--</span></figcaption>

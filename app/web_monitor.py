@@ -5,7 +5,7 @@
 
 架構
 - MonitorService（單例）持有所有監測狀態，以 threading.Lock 保護。
-- 溫度／音訊／測距儀各一條 worker thread，另有一條計時 thread 負責執行時間與自動停止；
+- 溫度／音訊／測距儀／光譜儀各一條 worker thread，另有一條計時 thread 負責執行時間與自動停止；
   行為對齊 main_csv.py（輪詢間隔、連續 10 次失敗才報斷線、恢復通知、停止時存檔）。
 - 前端透過 REST 下指令，透過 SSE (/api/stream) 接收狀態、圖表資料與通知。
 - 監測在伺服器端持續進行，頁面重整後由 /api/state 與 /api/spectrogram 復原畫面。
@@ -62,6 +62,7 @@ from rangefinder import LKIF2Device  # noqa: E402
 from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK  # noqa: E402
 import chunked_spectrogram  # noqa: E402
 import sim_devices  # noqa: E402
+import spectrometer_driver  # 只定義包裝類別；真正的驅動延遲到預檢／worker 啟動才 import
 from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import list_candidate_ports  # noqa: E402
 from temp_py_package.reader import check_port_present, read_temperature_diag
@@ -81,11 +82,15 @@ MAX_FAILURES = 10
 LOG_SUMMARY_S = 60              # 同一原因持續失敗時，log 每隔幾秒補一行摘要
 SERIES_MAX_POINTS = 2000       # 溫度／距離歷史送給前端時降採樣的點數上限
 SSE_QUEUE_MAX = 300
+SPEC_BINS = 512                 # 光譜熱圖每筆降到的波長 bin 數（每 bin 取 max，保留峰值）
+SPEC_HISTORY_MAX = 1200         # 熱圖歷史最多保留幾筆（另受 history_duration 時間窗限制）
+SPEC_MAX_COUNTS = 65535         # 送前端的強度量化上限（uint16）
 MAX_DISPLAY_SECONDS = 600       # 頻譜圖顯示長度上限（只影響記憶體中的顯示緩衝）
 MIN_FREE_BYTES = 2 * 1024 ** 3  # 剩餘空間低於 2 GB 時預檢警告
 # 每小時檔案大小估計（22050 Hz、單聲道、預設間隔；1 小時實測）
 EST_BYTES_PER_HOUR = {"wav": 158_760_044, "spectrogram": 297_639_967, "temperature": 200_000,
-                      "distance": 2_000_000}
+                      "distance": 2_000_000, "spectrometer": 111_000_000}  # 光譜儀：預設每 0.5 秒一列、2048 欄
+
 
 # 測距儀固定參數（main_csv.py L67-70）
 BASIC_REF = 50.0
@@ -105,6 +110,8 @@ DEFAULT_PARAMS = {
     "history_duration": "100",
     "refl_mode": "0",
     "distance_interval": "0.1",
+    "spec_interval": "0.5",
+    "spec_integration_ms": "50",
 }
 
 REFL_MODE_LABELS = {0: "0-漫反射", 1: "1-鏡面反射"}
@@ -125,9 +132,9 @@ REASON_LABELS = {
     R_DISABLED: "未選擇／未啟用", R_ERROR: "其他錯誤",
     R_IDLE: "待機", R_INIT: "初始化中", R_OK: "正常", R_STOPPED: "已停止",
 }
-# 感測器 key → 中文名（log 的來源欄、預檢說明用）。整合光譜儀時在這裡加 "spectrometer": "光譜儀"，
-# 並在 self.sensors / _reset_sensor_display 加同名 key，前端狀態面板就會從「未接入」變成實際狀態。
-SENSOR_NAMES = {"temp": "溫度", "audio": "音訊", "distance": "距離"}
+# 感測器 key → 中文名（log 的來源欄、預檢說明用）。新增感測器時在這裡加，
+# 並在 self.sensors / _reset_sensor_display 加同名 key；前端狀態面板的 sensors 缺少該 key 時會顯示「未接入」。
+SENSOR_NAMES = {"temp": "溫度", "audio": "音訊", "distance": "距離", "spectrometer": "光譜儀"}
 SRC_SYSTEM = "系統"
 
 
@@ -279,6 +286,26 @@ def classify_rangefinder_error(exc):
     return R_ERROR, f"測距儀發生未預期的錯誤：{exc}"
 
 
+def classify_spectrometer_error(exc):
+    """把光譜儀驅動 import／初始化／量測的例外分類成 (reason, detail)（沿用 R_* 代碼）。"""
+    msg = str(exc)
+    if isinstance(exc, ImportError):
+        if getattr(exc, "name", None) == "PyQt5" or "PyQt5" in msg:
+            return R_DRIVER, "缺少 PyQt5：光譜儀驅動需要 PyQt5（uv sync --extra spectrometer）"
+        return R_DRIVER, f"光譜儀驅動載入失敗：{msg}"
+    if isinstance(exc, FileNotFoundError):
+        return R_DRIVER, "找不到 AvaSpec 驅動檔：Windows 需要 drivers/avaspecx64.dll，macOS／Linux 需安裝 AvaSpec 原生函式庫"
+    if isinstance(exc, OSError):
+        return R_DRIVER, f"AvaSpec DLL 載入失敗：缺少相依檔，或 Python 與 DLL 位元（32/64）不符（{msg}）"
+    if isinstance(exc, AttributeError):
+        return R_DRIVER, f"此系統無法載入 AvaSpec 驅動（{msg}）"
+    if "沒有找到光譜儀" in msg or "無可用設備" in msg:
+        return R_NOT_FOUND, "找不到光譜儀：檢查 USB 線、電源與 AvaSpec 驅動（裝置管理員是否看得到 AvaSpec）"
+    if "等待超時" in msg:
+        return R_NO_DATA, "光譜儀沒有回傳資料（等待超時）：確認光譜儀未被其他程式佔用，並檢查積分時間與觸發設定"
+    return R_ERROR, f"光譜儀發生未預期的錯誤：{msg}"
+
+
 # 測距儀 FloatResult 非 VALID 時的分類（Unknown/INVALID 另外處理）
 RANGEFINDER_STATUS_DIAG = {
     "WAITING": (R_NO_DATA, "測距儀等待資料中：尚未取得量測值，確認控制器為量測模式且取樣已開始"),
@@ -369,6 +396,16 @@ def spec_to_int16_db(spec_linear):
     return q.T.copy()
 
 
+def bin_spectrum_max(counts, n_bins=SPEC_BINS):
+    """光譜 counts（長度 n）→ uint16，並降到 n_bins 個波長 bin（每 bin 取 max，保留峰值）。
+
+    回傳 (bins uint16[n_bins], full uint16[n])；強度四捨五入並夾在 0–65535。
+    """
+    full = np.clip(np.rint(np.asarray(counts, dtype=float)), 0, SPEC_MAX_COUNTS).astype("<u2")
+    edges = np.linspace(0, len(full), n_bins + 1).astype(int)
+    return np.maximum.reduceat(full, edges[:-1]), full
+
+
 def iso_now(ts=None):
     return datetime.datetime.fromtimestamp(ts if ts is not None else time.time()).astimezone().isoformat()
 
@@ -390,6 +427,7 @@ class ExperimentRecorder:
         self.dir = os.path.join(DATA_DIR, experiment_id)
         os.makedirs(self.dir, exist_ok=True)
         self.lock = threading.Lock()
+        self._json_lock = threading.Lock()  # 多個 worker 會同時 update()；暫存檔路徑相同，寫入必須串行
         self.info = info
         self.files = {}     # key -> 統計（name、rows/frames、bytes…）
         self._handles = {}  # key -> (file, writer, kind)
@@ -583,17 +621,18 @@ class ExperimentRecorder:
             doc["errors"] = list(self.errors)
         target = self.path(f"experiment_{self.experiment_id}.json")
         tmp = target + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(doc, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        try:
-            os.replace(tmp, target)
-        except PermissionError:
-            # Windows：目標檔被其他程式（例如防毒、編輯器）短暫鎖住時 os.replace 會失敗，改為直接覆寫
-            with open(target, "w", encoding="utf-8") as f:
+        with self._json_lock:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(doc, f, ensure_ascii=False, indent=2)
-            os.remove(tmp)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.replace(tmp, target)
+            except PermissionError:
+                # Windows：目標檔被其他程式（例如防毒、編輯器）短暫鎖住時 os.replace 會失敗，改為直接覆寫
+                with open(target, "w", encoding="utf-8") as f:
+                    json.dump(doc, f, ensure_ascii=False, indent=2)
+                os.remove(tmp)
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +646,7 @@ class MonitorService:
 
         self.phase = "idle"  # idle | running | stopping | stopped
         self.status_text = "待機中"
-        self.enabled = {"temp": False, "audio": False, "distance": False}
+        self.enabled = {"temp": False, "audio": False, "distance": False, "spectrometer": False}
         self.params = dict(DEFAULT_PARAMS)
         self.duration = -1
         self.start_time = None
@@ -647,6 +686,12 @@ class MonitorService:
         # 溫度／距離時間序列（本次監測全程）：[(elapsed 秒, 值或 None), ...]；開始新監測時清空
         self.series = {"temp": [], "distance": []}
         self.series_sent = {"temp": 0, "distance": 0}  # 已透過 SSE 送出的筆數
+
+        # 光譜儀（Optical Spectrum）：波長軸 meta、降採樣歷史（熱圖用）、最新一筆完整解析度（即時光譜用）
+        self.opt_meta = None
+        self.opt_cols = collections.deque(maxlen=SPEC_HISTORY_MAX)  # (elapsed 秒, bins bytes 或 None=讀取失敗)
+        self.opt_total = 0      # 自本輪開始的筆數（全域索引，含失敗筆）
+        self.opt_latest = None  # {"t": elapsed, "full": uint16 bytes}，最後一筆成功的完整光譜
 
         self.notices = collections.deque(maxlen=30)
         self.notice_seq = 0
@@ -727,6 +772,7 @@ class MonitorService:
             "temp": {"text": "-- °C", "value": None, "level": "idle"},
             "distance": {"text": "-- mm", "value": None, "level": "idle"},
             "audio": {"text": "--", "level": "idle"},
+            "spectrometer": {"text": "--", "value": None, "level": "idle"},
         }
         for s in self.sensors.values():
             s.update(reason=R_IDLE, detail="", last_ok=None, fail_count=0)
@@ -846,7 +892,29 @@ class MonitorService:
         with self.lock:
             snap["series"] = {k: downsample_series(v) for k, v in self.series.items()}
             snap["notices"] = list(self.notices)[-10:]
+        snap["spectrum"] = self.spectrum_bulk()
         return snap
+
+    def spectrum_bulk(self):
+        """光譜儀的復原資料（只放在 /api/state，不隨 SSE state 事件重送）：波長軸 meta、降採樣歷史、最新完整光譜。
+
+        歷史 bins 以 uint16 小端串接（失敗筆補 0，由 ok 陣列標示），整段 base64。沒有光譜資料時回傳 None。
+        """
+        with self.lock:
+            meta = self.opt_meta
+            if meta is None:
+                return None
+            cols = list(self.opt_cols)
+            total = self.opt_total
+            latest = self.opt_latest
+        zero = bytes(meta["n_bins"] * 2)
+        return {
+            "meta": meta, "start": total - len(cols), "count": len(cols),
+            "t": [c[0] for c in cols], "ok": [0 if c[1] is None else 1 for c in cols],
+            "bins": base64.b64encode(b"".join(c[1] or zero for c in cols)).decode("ascii"),
+            "latest": ({"t": latest["t"], "full": base64.b64encode(latest["full"]).decode("ascii")}
+                       if latest else None),
+        }
 
     def spectrogram_bulk(self):
         """回傳 (起始全域索引, 欄數, n_freq, bytes)。"""
@@ -876,6 +944,19 @@ class MonitorService:
         except BaseException as e:  # noqa: BLE001  macOS 上 ctypes.WinDLL 不存在 → AttributeError
             return False, "• 測距儀初始化失敗，距離監測將被停用", classify_rangefinder_error(e)
 
+    def check_spectrometer(self):
+        """預檢：延遲 import 驅動並嘗試初始化光譜儀。回傳 (ok, 警告訊息, (reason, detail))。
+        ImportError（缺 PyQt5）、OSError（缺 DLL）、找不到裝置都在這裡被分類，不會影響 app 啟動。"""
+        try:
+            dev = spectrometer_driver.open_spectrometer()
+            try:
+                dev.close()
+            except Exception as e:  # noqa: BLE001
+                slog(WARN, SENSOR_NAMES["spectrometer"], f"預檢後關閉光譜儀失敗: {e}")
+            return True, None, (R_OK, "")
+        except Exception as e:  # noqa: BLE001
+            return False, "• 光譜儀初始化失敗，光譜儀監測將被停用", classify_spectrometer_error(e)
+
     def validate_params(self, raw):
         """對應 main_csv.py L312-318 的參數轉型；失敗丟出 ValueError。"""
         try:
@@ -887,6 +968,9 @@ class MonitorService:
                 "history_duration": float(str(raw.get("history_duration", "")).strip()),
                 "distance_interval": float(str(raw.get("distance_interval", "")).strip()),
                 "refl_mode": int(str(raw.get("refl_mode", "0")).split("-")[0].strip()),
+                "spec_interval": float(str(raw.get("spec_interval", DEFAULT_PARAMS["spec_interval"])).strip()),
+                "spec_integration_ms": float(str(raw.get("spec_integration_ms",
+                                                         DEFAULT_PARAMS["spec_integration_ms"])).strip()),
             }
         except (TypeError, ValueError) as e:
             raise ValueError(f"參數輸入錯誤: {e}") from None
@@ -902,6 +986,10 @@ class MonitorService:
             raise ValueError("參數輸入錯誤: 測距間隔必須大於 0")
         if parsed["refl_mode"] not in (0, 1):
             raise ValueError("參數輸入錯誤: 測距儀模式必須是 0 或 1")
+        if parsed["spec_interval"] <= 0:
+            raise ValueError("參數輸入錯誤: 光譜儀量測間隔必須大於 0")
+        if not 0 < parsed["spec_integration_ms"] <= 10000:
+            raise ValueError("參數輸入錯誤: 光譜儀積分時間必須介於 0 與 10000 毫秒之間")
         return parsed
 
     @staticmethod
@@ -918,7 +1006,7 @@ class MonitorService:
 
     def preflight(self, raw):
         warnings = []
-        enabled = {"temp": True, "audio": True, "distance": True}
+        enabled = {"temp": True, "audio": True, "distance": True, "spectrometer": True}
         sim = self.simulated
         com = str(raw.get("com_port", "") or "").strip()
         # diag：每個感測器預檢時的 (reason, detail)；被停用者在狀態面板顯示「未啟用」並帶出底層原因
@@ -944,6 +1032,11 @@ class MonitorService:
             if not ok:
                 warnings.append(msg)
                 enabled["distance"] = False
+        if "spectrometer" not in sim:
+            ok, msg, diag["spectrometer"] = self.check_spectrometer()
+            if not ok:
+                warnings.append(msg)
+                enabled["spectrometer"] = False
         self.preflight_reasons = {k: {"reason": r, "detail": d} for k, (r, d) in diag.items()}
         self._show_preflight(enabled, diag)
 
@@ -996,7 +1089,7 @@ class MonitorService:
                              level="error" if r in (R_DRIVER, R_NOT_FOUND, R_ERROR) else "warn")
                     self._pf_shown.add(k)
                 elif k in self._pf_shown:
-                    s.update(text={"temp": "-- °C", "distance": "-- mm", "audio": "--"}[k],
+                    s.update(text={"temp": "-- °C", "distance": "-- mm", "audio": "--", "spectrometer": "--"}[k],
                              level="idle", reason=R_IDLE, detail="")
                     self._pf_shown.discard(k)
         self.push_state()
@@ -1040,6 +1133,7 @@ class MonitorService:
                 "display_history_s": p["history_duration"], "distance_interval_s": p["distance_interval"],
                 "refl_mode": REFL_MODE_LABELS[p["refl_mode"]],
                 "nfft": NFFT, "noverlap": NOVERLAP,
+                "spec_interval_s": p["spec_interval"], "spec_integration_ms": p["spec_integration_ms"],
             },
             "enabled": dict(enabled),
             # 模擬資料絕不能被誤認為真實量測：這裡列出所有模擬來源
@@ -1052,9 +1146,12 @@ class MonitorService:
                                   else audio_sel) if enabled["audio"] else None),
                 "rangefinder": (("模擬（sim_devices.SimLKIF2Device）" if "distance" in self.simulated
                                  else "KEYENCE LK-G5000 (LKIF2.dll)") if enabled["distance"] else None),
+                "spectrometer": (("模擬（sim_devices.SimSpectrometer）" if "spectrometer" in self.simulated
+                                  else "AvaSpec-ULS2048L (avaspecx64.dll)") if enabled["spectrometer"] else None),
             },
             "platform": {"os": platform.platform(), "python": platform.python_version()},
             "spectrogram": None,
+            "spectrometer": None,  # 光譜儀 worker 開啟裝置後補上 metadata（波長範圍、像素數、積分時間…）
         }
         recorder = None
         try:
@@ -1073,6 +1170,7 @@ class MonitorService:
             if enabled["distance"]:
                 recorder.open_csv("distance", f"distance_{experiment_id}.csv",
                                   ["Timestamp", "Elapsed(s)", "Absolute(mm)", "Relative(mm)", "Status"], encoding="utf-8-sig")
+            # 光譜儀 CSV 的檔頭要等裝置開啟、讀到波長軸後才寫（由 _spectrometer_worker 處理）
         except OSError as e:
             slog(ERROR, SRC_SYSTEM, f"無法建立實驗資料夾或檔案: {e}", e)
             if recorder:
@@ -1099,6 +1197,10 @@ class MonitorService:
             self.spec_freqs = None
             self.series = {"temp": [], "distance": []}
             self.series_sent = {"temp": 0, "distance": 0}
+            self.opt_meta = None
+            self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
+            self.opt_total = 0
+            self.opt_latest = None
             self.zero_warned = False
             self.last_result = None
             self.elapsed = 0.0
@@ -1106,7 +1208,8 @@ class MonitorService:
             self.stop_event = threading.Event()
             self.finalizing = False
             self._reset_sensor_display()
-            parts = [name for key, name in (("temp", "溫度"), ("audio", "音訊"), ("distance", "距離"))
+            parts = [name for key, name in (("temp", "溫度"), ("audio", "音訊"), ("distance", "距離"),
+                                     ("spectrometer", "光譜"))
                      if enabled[key]]
             self.status_text = f"監測中 ({'+'.join(parts)})"
             self.phase = "running"
@@ -1145,6 +1248,11 @@ class MonitorService:
                                                    args=(stop_event, p["distance_interval"], p["refl_mode"],
                                                          recorder),
                                                    name="rangefinder", daemon=True)
+        if enabled["spectrometer"]:
+            threads["spectrometer"] = threading.Thread(
+                target=self._spectrometer_worker,
+                args=(stop_event, p["spec_interval"], p["spec_integration_ms"], p["history_duration"], recorder),
+                name="spectrometer", daemon=True)
         with self.lock:
             self.threads = threads
         for t in threads.values():
@@ -1163,7 +1271,7 @@ class MonitorService:
                 if info["simulated"] else ""))
         dev = info["devices"]
         for key, label in (("temp", dev["temperature_com_port"]), ("audio", dev["audio_device"]),
-                           ("distance", dev["rangefinder"])):
+                           ("distance", dev["rangefinder"]), ("spectrometer", dev["spectrometer"])):
             if enabled[key]:
                 slog(INFO, SENSOR_NAMES[key], f"啟用：{label}")
             else:
@@ -1177,6 +1285,9 @@ class MonitorService:
         if enabled["distance"]:
             slog(INFO, SENSOR_NAMES["distance"], f"間隔 {p['distance_interval']} 秒，"
                  f"反射模式 {REFL_MODE_LABELS[p['refl_mode']]}，基準 {BASIC_REF} mm")
+        if enabled["spectrometer"]:
+            slog(INFO, SENSOR_NAMES["spectrometer"], f"量測間隔 {p['spec_interval']} 秒，"
+                 f"積分時間 {p['spec_integration_ms']:g} ms，平均 1 次，軟體觸發")
 
     def _on_write_error(self, key, exc):
         """ExperimentRecorder 寫檔失敗（例如磁碟已滿）時呼叫；每個檔案只通知一次。"""
@@ -1210,7 +1321,7 @@ class MonitorService:
             if t is threading.current_thread():
                 continue
             # 音訊 worker 可能正卡在 record_audio(update_interval) 內，給足時間讓它自行關閉串流
-            t.join(timeout=5 if name in ("audio", "distance") else 2)
+            t.join(timeout=5 if name in ("audio", "distance", "spectrometer") else 2)
             if t.is_alive():
                 slog(WARN, SRC_SYSTEM, f"{name} 執行緒未在時限內結束")
                 if recorder:
@@ -1261,7 +1372,7 @@ class MonitorService:
                     s = self.sensors[key]
                     slog(WARN, SENSOR_NAMES.get(key, key), f"停止時仍在失敗 [{s['reason']}]："
                          f"持續 {end_ts - t['fail_start']:.1f} 秒，累計 {t['fails']} 次；{s['detail']}")
-        for csv_key, label in (("temperature", "溫度"), ("distance", "距離")):
+        for csv_key, label in (("temperature", "溫度"), ("distance", "距離"), ("spectrometer", "光譜儀")):
             if csv_key in summary:
                 f = summary[csv_key]
                 messages.append(f"{label} {f['rows']} 筆")
@@ -1636,6 +1747,129 @@ class MonitorService:
                 except BaseException:  # noqa: BLE001
                     pass
 
+    @staticmethod
+    def _opt_max_cols(interval, history_duration):
+        """光譜熱圖歷史保留筆數：顯示時間窗（history_duration）內的筆數，上限 SPEC_HISTORY_MAX。"""
+        return min(SPEC_HISTORY_MAX, max(2, math.ceil(history_duration / interval) + 1))
+
+    def _ingest_spectrum(self, t, counts):
+        """只供畫面顯示：把一筆光譜（counts 為 None 代表讀取失敗）降採樣後存進歷史並以 SSE 推送。
+        存檔由 spectrometer CSV 負責。"""
+        with self.lock:
+            meta = self.opt_meta
+        if meta is None:
+            return
+        if counts is None:
+            bins = full = None
+        else:
+            b, f = bin_spectrum_max(counts, meta["n_bins"])
+            bins, full = b.tobytes(), f.tobytes()
+        t = round(t, 2)
+        with self.lock:
+            idx = self.opt_total
+            self.opt_total += 1
+            self.opt_cols.append((t, bins))
+            if full is not None:
+                self.opt_latest = {"t": t, "full": full}
+            run_id = self.run_id
+        def enc(b):
+            return None if b is None else base64.b64encode(b).decode("ascii")
+
+        self.publish("spectrum", {"run_id": run_id, "idx": idx, "t": t, "bins": enc(bins), "full": enc(full)})
+
+    def _spectrometer_worker(self, stop_event, interval, integration_ms, history_duration, recorder):
+        """光譜儀：每 interval 秒量測一次；每筆（含失敗）即時寫入 spectrometer CSV。
+
+        CSV：第一行 Timestamp,Elapsed(s),Status 後接各像素波長（nm，3 位小數）；之後每筆一列，強度為原始 counts
+        （未扣暗光）。失敗列強度欄留空、Status 寫「原因代碼: 訊息」。連續失敗 MAX_FAILURES 次判定斷線，恢復時通知。
+        """
+        device = None
+        n = 0  # 像素數（CSV 欄數）
+
+        def log(counts, status):
+            now = time.time()
+            elapsed = f"{now - self.start_time:.3f}"
+            if counts is None:
+                recorder.write_row("spectrometer", [iso_now(now), elapsed, status] + [""] * n, ok=False)
+            else:
+                recorder.write_row("spectrometer", [iso_now(now), elapsed, status] + [f"{v:.2f}" for v in counts])
+
+        try:
+            if "spectrometer" in self.simulated:
+                device = sim_devices.SimSpectrometer(faults=self.sim_faults)
+            else:
+                device = spectrometer_driver.open_spectrometer()  # 延遲 import；缺 PyQt5／DLL／裝置都在這裡丟例外
+            wl = np.asarray(device.wavelength, dtype=float)
+            n = len(wl)
+            n_bins = min(SPEC_BINS, n)
+            exp_id = recorder.experiment_id
+            recorder.open_csv("spectrometer", f"spectrometer_{exp_id}.csv",
+                              ["Timestamp", "Elapsed(s)", "Status"] + [f"{w:.3f}" for w in wl], encoding="utf-8-sig")
+            simulated = "spectrometer" in self.simulated
+            recorder.update(spectrometer={
+                "pixels": n, "wavelength_min_nm": round(float(wl.min()), 3), "wavelength_max_nm": round(float(wl.max()), 3),
+                "integration_ms": integration_ms, "interval_s": interval, "averages": 1, "trigger": "software",
+                "intensity": "原始 counts（未扣暗光）", "csv_columns": 3 + n, "simulated": simulated})
+            meta = {"run_id": self.run_id, "wavelength": [round(float(w), 3) for w in wl], "n_pixels": n,
+                    "n_bins": n_bins, "wl_min": float(wl.min()), "wl_max": float(wl.max()),
+                    "interval": interval, "integration_ms": integration_ms, "simulated": simulated,
+                    "display_s": min(history_duration, self._opt_max_cols(interval, history_duration) * interval),
+                    "max_cols": self._opt_max_cols(interval, history_duration), "saturation": SPEC_MAX_COUNTS}
+            with self.lock:
+                self.opt_meta = meta
+            self.publish("spec_meta", meta)
+            slog(INFO, "光譜儀", f"初始化完成：{n} 像素，{wl.min():.2f}–{wl.max():.2f} nm，積分 {integration_ms:g} ms，"
+                 f"間隔 {interval} 秒，CSV spectrometer_{exp_id}.csv（{3 + n} 欄）")
+            self.set_sensor("spectrometer", text="量測中", level="ok")
+
+            consecutive_failures = 0
+            disconnected = False
+            next_run = time.time()
+            while not stop_event.is_set():
+                try:
+                    counts = device.measure(integration_ms)
+                    log(counts, "ok")
+                    self._ingest_spectrum(time.time() - self.start_time, counts)
+                    consecutive_failures = 0
+                    if disconnected:
+                        disconnected = False
+                        self.notify("info", "通知", "光譜儀已重新連接", src="光譜儀")
+                    peak = int(np.argmax(counts))
+                    self.set_sensor("spectrometer", text=f"最強峰 {wl[peak]:.1f} nm", value=round(float(counts[peak]), 1),
+                                    level="ok")
+                except Exception as e:  # noqa: BLE001
+                    reason, detail = classify_spectrometer_error(e)
+                    self._log_exception_once("spectrometer", e, "光譜儀讀取錯誤")
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_FAILURES and not disconnected:
+                        disconnected = True
+                        self.notify("warning", "警告", f"光譜儀可能已斷線（{REASON_LABELS[reason]}），"
+                                    "監測將繼續但不會讀取光譜數據", src="光譜儀")
+                    log(None, f"{reason}: {e}")
+                    self._ingest_spectrum(time.time() - self.start_time, None)
+                    self.set_sensor("spectrometer", text="感測器斷線" if disconnected else "讀取失敗", value=None,
+                                    level="error" if disconnected else "warn", reason=reason, detail=detail)
+                # 以固定節奏量測（量測本身耗時算在間隔內）；落後太多時不補跑，直接從現在重新計時
+                next_run += interval
+                delay = next_run - time.time()
+                if delay < 0:
+                    next_run = time.time()
+                    delay = 0
+                stop_event.wait(delay)
+        except BaseException as e:  # noqa: BLE001
+            slog(ERROR, "光譜儀", f"光譜儀監測錯誤: {e}", e)
+            recorder.add_error(f"光譜儀監測錯誤: {e}")
+            self.notify("warning", "警告", f"光譜儀監測出現問題: {e}\n監測將繼續但不會有光譜數據", src="光譜儀")
+            reason, detail = classify_spectrometer_error(e)
+            self.set_sensor("spectrometer", text="初始化失敗", value=None, level="error", reason=reason, detail=detail)
+        finally:
+            recorder.close("spectrometer")
+            if device is not None:
+                try:
+                    device.close()
+                except BaseException as e:  # noqa: BLE001
+                    slog(WARN, "光譜儀", f"關閉光譜儀錯誤: {e}", e)
+
     # ---------------- 關閉伺服器 ----------------
     def shutdown(self, reason="sigint"):
         with self.lock:
@@ -1794,7 +2028,8 @@ def main():
     parser.add_argument("--host", default=HOST, help=f"監聽位址（預設 {HOST}）")
     parser.add_argument("--port", type=int, default=PORT, help=f"連接埠（預設 {PORT}）")
     parser.add_argument("--simulate", default="",
-                        help="以模擬資料取代指定感測器：temp,distance,audio 或 all（預設不模擬；音訊需明確列出）")
+                        help="以模擬資料取代指定感測器：temp,distance,audio,spectrometer（別名 spectrum/spec/avaspec）"
+                             "或 all（預設不模擬；音訊需明確列出）")
     parser.add_argument("--simulate-faults", action="store_true",
                         help="模擬感測器定期連續失敗 12 次再恢復，用來測試斷線／恢復通知")
     args = parser.parse_args()

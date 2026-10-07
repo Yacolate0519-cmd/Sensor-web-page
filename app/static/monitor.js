@@ -4,7 +4,8 @@
 
   const $ = (id) => document.getElementById(id);
   const PARAM_KEYS = ["com_port", "audio_device", "sample_rate",
-    "update_interval", "history_duration", "refl_mode", "distance_interval"];
+    "update_interval", "history_duration", "refl_mode", "distance_interval",
+    "spec_interval", "spec_integration_ms"];
   const AUDIO_PLACEHOLDERS = ["無可用音訊設備", "音訊設備檢測失敗"];
 
   let theme = readTheme();
@@ -14,6 +15,8 @@
   let syncing = true;        // 正在從 /api/state 復原
   let pendingAudio = [];     // 復原期間暫存的 SSE 音訊事件
   let pendingSeries = [];    // 復原期間暫存的 SSE 溫度／距離事件
+  let pendingSpec = [];      // 復原期間暫存的 SSE 光譜儀事件（["meta"|"col", msg]）
+  let optMeta = null;        // 光譜儀 meta（波長軸等）；每個 run 只送一次
   const seenNotices = new Set();
 
   // ------------------------------------------------------------------
@@ -289,6 +292,34 @@
   const EMPTY = -32768;
   const MAX_TEX_WIDTH = 8192;
 
+  // colorbar（Spectrogram 與光譜熱圖共用）：JET 色階、刻度與直式標題
+  function drawColorbar(chart, p, vmin, vmax, label) {
+    const ctx = chart.ctx;
+    const bx = p.x + p.w + 14, bw = 12, by = p.y, bh = p.h;
+    for (let i = 0; i < bh; i++) {
+      const li = Math.round((1 - i / Math.max(1, bh - 1)) * 255) * 3;
+      ctx.fillStyle = `rgb(${JET[li]},${JET[li + 1]},${JET[li + 2]})`;
+      ctx.fillRect(bx, by + i, bw, 1.5);
+    }
+    ctx.strokeStyle = theme.axis;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    const yt = ticks(vmin, vmax, Math.max(3, Math.floor(bh / 45)));
+    const step = yt.length > 1 ? yt[1] - yt[0] : 1;
+    ctx.fillStyle = theme.tick; ctx.font = `11px ${theme.mono}`;
+    ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    yt.forEach((v) => {
+      const py = by + bh - (v - vmin) / (vmax - vmin) * bh;
+      ctx.fillRect(bx + bw, py, 3, 1);
+      ctx.fillText(fmtTick(v, step), bx + bw + 5, py);
+    });
+    ctx.save();
+    ctx.fillStyle = theme.text; ctx.font = `11.5px ${theme.font}`;
+    ctx.translate(chart.w - 8, by + bh / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  }
+
   class Spectrogram extends CanvasChart {
     constructor(canvas) {
       super(canvas, { l: 62, r: 78, t: 8, b: 38 });
@@ -418,31 +449,223 @@
       if (!m || !G) this.placeholder(p, m ? "等待資料" : "尚未開始監測");
       this.colorbar(p);
     }
-    colorbar(p) {
-      const ctx = this.ctx;
-      const bx = p.x + p.w + 14, bw = 12, by = p.y, bh = p.h;
-      for (let i = 0; i < bh; i++) {
-        const li = Math.round((1 - i / Math.max(1, bh - 1)) * 255) * 3;
-        ctx.fillStyle = `rgb(${JET[li]},${JET[li + 1]},${JET[li + 2]})`;
-        ctx.fillRect(bx, by + i, bw, 1.5);
+    colorbar(p) { drawColorbar(this, p, this.vmin, this.vmax, "Amplitude (dB)"); }
+  }
+
+  // ------------------------------------------------------------------
+  // 光譜熱圖（x = 時間、y = 波長）：每筆光譜是一個 512-bin 的欄，欄位置用實際經過秒數；
+  // 色階取近期 1%–99% 百分位；讀取失敗的時間欄留空並以警告色淡淡標出。
+  // ------------------------------------------------------------------
+  class SpectrumHeatmap extends CanvasChart {
+    constructor(canvas) {
+      super(canvas, { l: 62, r: 78, t: 8, b: 38 });
+      this.meta = null;
+      this.disabled = false;
+      this.vmin = 0; this.vmax = 1000; this.hasRange = false; this.lastRange = 0;
+      this.off = document.createElement("canvas");
+      this.offCtx = this.off.getContext("2d");
+      this.total = 0;
+    }
+    configure(meta) {
+      this.meta = meta;
+      const nb = meta.n_bins, W = meta.max_cols;
+      this.nb = nb; this.W = W;
+      this.raw = new Uint16Array(W * nb);
+      this.ts = new Float64Array(W);
+      this.ok = new Uint8Array(W);
+      this.off.width = W; this.off.height = nb;
+      this.offCtx.clearRect(0, 0, W, nb);
+      this.colImg = this.offCtx.createImageData(1, nb);
+      this.total = 0; this.hasRange = false;
+      this.requestDraw();
+    }
+    clear() { this.meta = null; this.total = 0; this.hasRange = false; this.requestDraw(); }
+    lastOk() { return this.total ? this.ok[(this.total - 1) % this.W] === 1 : true; }
+    lastT() { return this.total ? this.ts[(this.total - 1) % this.W] : 0; }
+    // bins 為 null 代表該筆讀取失敗（欄留空）
+    addColumn(idx, t, bins) {
+      if (!this.meta || idx < this.total) return; // 已有（復原與 SSE 重疊）
+      const pos = idx % this.W;
+      this.ts[pos] = t; this.ok[pos] = bins ? 1 : 0;
+      if (bins) this.raw.set(bins, pos * this.nb); else this.raw.fill(0, pos * this.nb, (pos + 1) * this.nb);
+      this.total = idx + 1;
+      this.finishAdd([pos]);
+    }
+    // 復原：一次補多欄（all 為各欄 bins 串接）
+    addColumns(start, ts, oks, all) {
+      if (!this.meta) return;
+      const touched = [];
+      for (let j = 0; j < ts.length; j++) {
+        const idx = start + j;
+        if (idx < this.total) continue;
+        const pos = idx % this.W;
+        this.ts[pos] = ts[j]; this.ok[pos] = oks[j] ? 1 : 0;
+        this.raw.set(all.subarray(j * this.nb, (j + 1) * this.nb), pos * this.nb);
+        this.total = idx + 1;
+        touched.push(pos);
       }
-      ctx.strokeStyle = theme.axis;
-      ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
-      const yt = ticks(this.vmin, this.vmax, Math.max(3, Math.floor(bh / 45)));
-      const step = yt.length > 1 ? yt[1] - yt[0] : 1;
-      ctx.fillStyle = theme.tick; ctx.font = `11px ${theme.mono}`;
-      ctx.textAlign = "left"; ctx.textBaseline = "middle";
-      yt.forEach((v) => {
-        const py = by + bh - (v - this.vmin) / (this.vmax - this.vmin) * bh;
-        ctx.fillRect(bx + bw, py, 3, 1);
-        ctx.fillText(fmtTick(v, step), bx + bw + 5, py);
-      });
+      this.finishAdd(touched);
+    }
+    finishAdd(touched) {
+      const now = performance.now();
+      if (!this.hasRange || now - this.lastRange > 1000) {
+        this.lastRange = now;
+        if (this.autoRange()) { this.repaintAll(); this.requestDraw(); return; }
+      }
+      touched.forEach((pos) => this.paintColumn(pos));
+      this.requestDraw();
+    }
+    autoRange() {
+      // 近期成功欄的 1% / 99% 百分位，避免單一尖峰把整張圖壓暗
+      const nb = this.nb, W = this.W;
+      const recent = Math.min(this.total, W, 300);
+      const stride = Math.max(1, Math.floor(recent * nb / 40000));
+      const sample = [];
+      let idx = 0;
+      for (let i = this.total - recent; i < this.total; i++) {
+        const pos = i % W;
+        if (!this.ok[pos]) continue;
+        const base = pos * nb;
+        for (let f = 0; f < nb; f++, idx++) if (idx % stride === 0) sample.push(this.raw[base + f]);
+      }
+      if (sample.length < 16) return false;
+      sample.sort((a, b) => a - b);
+      const q = (p) => sample[Math.min(sample.length - 1, Math.floor(p * (sample.length - 1)))];
+      let lo = q(0.01), hi = q(0.99);
+      if (hi - lo < 50) { const mid = (hi + lo) / 2; lo = mid - 25; hi = mid + 25; }
+      lo = Math.floor(lo); hi = Math.ceil(hi);
+      const tol = Math.max(5, (this.vmax - this.vmin) * 0.03);
+      const changed = !this.hasRange || Math.abs(lo - this.vmin) > tol || Math.abs(hi - this.vmax) > tol;
+      if (changed) { this.vmin = lo; this.vmax = hi; this.hasRange = true; }
+      return changed;
+    }
+    colorAt(v, out, o) {
+      let t = (v - this.vmin) / (this.vmax - this.vmin);
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const li = Math.round(t * 255) * 3;
+      out[o] = JET[li]; out[o + 1] = JET[li + 1]; out[o + 2] = JET[li + 2]; out[o + 3] = 255;
+    }
+    paintColumn(pos) {
+      const nb = this.nb, d = this.colImg.data, base = pos * nb;
+      if (!this.ok[pos]) { d.fill(0); } // 失敗欄：透明（draw 時另外淡淡標色）
+      else for (let f = 0; f < nb; f++) this.colorAt(this.raw[base + f], d, (nb - 1 - f) * 4); // 短波長在下
+      this.offCtx.putImageData(this.colImg, pos, 0);
+    }
+    repaintAll() {
+      for (let i = Math.max(0, this.total - this.W); i < this.total; i++) this.paintColumn(i % this.W);
+    }
+    draw() {
+      const p = this.begin();
+      const m = this.meta;
+      const H = m ? m.display_s : 100;
+      const tEnd = this.total ? this.lastT() + (m ? m.interval : 0.5) : 0;
+      const x = tEnd <= H ? [0, H] : [tEnd - H, tEnd];
+      const y = m ? [m.wl_min, m.wl_max] : [175, 1322];
+      const ctx = this.ctx;
+      if (m && this.total) {
+        const tx = (t) => p.x + (t - x[0]) / (x[1] - x[0]) * p.w;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+        for (let i = Math.max(0, this.total - this.W); i < this.total; i++) {
+          const pos = i % this.W, t0 = this.ts[pos];
+          const t1 = i + 1 < this.total ? this.ts[(i + 1) % this.W] : t0 + m.interval;
+          if (t1 < x[0]) continue;
+          const dx0 = tx(t0), dw = Math.max(1, tx(t1) - dx0 + 0.6);
+          if (this.ok[pos]) ctx.drawImage(this.off, pos, 0, 1, this.nb, dx0, p.y, dw, p.h);
+          else { ctx.globalAlpha = 0.3; ctx.fillStyle = theme.warn; ctx.fillRect(dx0, p.y, dw, p.h); ctx.globalAlpha = 1; }
+        }
+        ctx.restore();
+      }
+      this.axes(p, x, y, ["Time (s)", "Wavelength (nm)"], { noGrid: true });
+      if (!m || !this.total) this.placeholder(p, this.disabled ? "未啟用" : m ? "等待資料" : "尚未開始監測");
+      drawColorbar(this, p, this.vmin, this.vmax, "Intensity (counts)");
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 即時光譜（x = 波長、y = counts）：顯示最新一筆完整解析度，標示前 3 高峰；飽和時角落警告；
+  // 讀取失敗時保留最後一筆並顯示狀態文字。
+  // ------------------------------------------------------------------
+  const SAT_WARN = 65000;
+  class LiveSpectrum extends CanvasChart {
+    constructor(canvas, heat) {
+      super(canvas, { l: 62, r: 78, t: 8, b: 38 });
+      this.heat = heat;
+      this.wl = null; this.data = null; this.t = 0;
+      this.disabled = false; this.statusText = "";
+      this.peaks = [];
+    }
+    clear() { this.wl = null; this.data = null; this.peaks = []; this.requestDraw(); }
+    setWavelength(wl) { this.wl = Float64Array.from(wl); this.data = null; this.peaks = []; this.requestDraw(); }
+    setData(arr, t) { this.data = arr; this.t = t; this.peaks = this.findPeaks(); this.requestDraw(); }
+    // 前 3 高峰：區域極大值、彼此至少相隔 8 nm、需明顯高於背景；以三點拋物線內插峰位
+    findPeaks() {
+      const d = this.data, wl = this.wl;
+      if (!d || !wl || d.length !== wl.length) return [];
+      const n = d.length;
+      const sorted = Array.from(d).sort((a, b) => a - b);
+      const floor = sorted[n >> 1] + Math.max(100, 0.05 * sorted[n - 1]);
+      const cand = [];
+      for (let i = 1; i < n - 1; i++) if (d[i] >= floor && d[i] >= d[i - 1] && d[i] >= d[i + 1]) cand.push(i);
+      cand.sort((a, b) => d[b] - d[a]);
+      const out = [];
+      for (const i of cand) {
+        if (out.some((q) => Math.abs(wl[q.i] - wl[i]) < 8)) continue;
+        const a = d[i - 1], b = d[i], c = d[i + 1], den = a - 2 * b + c;
+        const off = den < 0 ? Math.max(-0.5, Math.min(0.5, 0.5 * (a - c) / den)) : 0;
+        const w = wl[i] + off * (wl[Math.min(n - 1, i + 1)] - wl[Math.max(0, i - 1)]) / 2;
+        out.push({ i, w, v: b });
+        if (out.length === 3) break;
+      }
+      return out;
+    }
+    draw() {
+      const p = this.begin();
+      const wl = this.wl, d = this.data;
+      const x = wl ? [wl[0], wl[wl.length - 1]] : [175, 1322];
+      let top = 1000;
+      if (d) { let mx = 0; for (let i = 0; i < d.length; i++) if (d[i] > mx) mx = d[i]; top = Math.max(1000, mx * 1.12); }
+      const { X, Y } = this.axes(p, x, [0, top], ["Wavelength (nm)", "Intensity (counts)"]);
+      if (!d || !wl) { this.placeholder(p, this.disabled ? "未啟用" : "等待資料"); return; }
+      const ctx = this.ctx;
       ctx.save();
-      ctx.fillStyle = theme.text; ctx.font = `11.5px ${theme.font}`;
-      ctx.translate(this.w - 8, by + bh / 2); ctx.rotate(-Math.PI / 2);
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("Amplitude (dB)", 0, 0);
+      ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+      ctx.strokeStyle = theme.wave; ctx.lineWidth = 1.2; ctx.lineJoin = "round";
+      ctx.beginPath();
+      for (let i = 0; i < d.length; i++) {
+        const px = X(wl[i]), py = Y(d[i]);
+        if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+      }
+      ctx.stroke();
       ctx.restore();
+      // 峰值標籤
+      ctx.font = `600 11px ${theme.mono}`; ctx.textBaseline = "bottom"; ctx.textAlign = "center";
+      this.peaks.forEach((q) => {
+        const px = X(q.w), py = Y(q.v);
+        ctx.fillStyle = theme.fft;
+        ctx.beginPath(); ctx.arc(px, py, 2.5, 0, Math.PI * 2); ctx.fill();
+        const text = `${q.w.toFixed(1)} nm`, tw = ctx.measureText(text).width;
+        const tx = Math.max(p.x + tw / 2 + 2, Math.min(px, p.x + p.w - tw / 2 - 2));
+        ctx.fillStyle = theme.text;
+        ctx.fillText(text, tx, Math.max(p.y + 12, py - 5));
+      });
+      // 角落警告：飽和（右上）、讀取失敗（左上，保留最後一筆）
+      const badge = (text, right, y) => {
+        ctx.font = `600 11.5px ${theme.mono}`;
+        const bw = Math.ceil(ctx.measureText(text).width) + 14, bh = 20;
+        const bx = right ? p.x + p.w - bw - 6 : p.x + 6;
+        ctx.beginPath(); ctx.roundRect(bx, y, bw, bh, 5);
+        ctx.fillStyle = theme.warn; ctx.fill();
+        ctx.fillStyle = "#1a1400"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        ctx.fillText(text, bx + 7, y + bh / 2 + 0.5);
+      };
+      let max = 0; for (let i = 0; i < d.length; i++) if (d[i] > max) max = d[i];
+      if (max >= SAT_WARN) badge("飽和：已達 65535 counts 上限", true, p.y + 6);
+      if (!this.heat.lastOk()) {
+        const age = Math.max(0, Math.round(this.heat.lastT() - this.t));
+        badge(`${this.statusText || "讀取失敗"}（顯示 ${age} 秒前的光譜）`, false, p.y + 6);
+      }
     }
   }
 
@@ -456,7 +679,17 @@
     color: () => theme.wave, unit: "mm", minRange: 0.5, decimals: 2,
   });
   const seriesCharts = { temp: tempChart, distance: distChart };
-  const charts = [specChart, tempChart, distChart];
+  const optHeat = new SpectrumHeatmap($("cv-opt"));
+  const optLive = new LiveSpectrum($("cv-opt-live"), optHeat);
+  const charts = [specChart, tempChart, distChart, optHeat, optLive];
+
+  function b64Bytes(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  const b64U16 = (b64) => new Uint16Array(b64Bytes(b64).buffer);
 
   function applySeries(msg) {
     if (msg.run_id !== currentRun) return;
@@ -466,17 +699,38 @@
   function applyAudio(msg) {
     if (msg.run_id !== currentRun) return;
     if (msg.spec && msg.spec.count) {
-      const bin = atob(msg.spec.b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const arr = new Int16Array(bytes.buffer);
+      const arr = new Int16Array(b64Bytes(msg.spec.b64).buffer);
       if (msg.spec.start > specChart.total) { resync(); return; } // 有漏欄：重新抓整段
       specChart.addColumns(msg.spec.start, msg.spec.count, arr);
     }
   }
 
+  // ---- 光譜儀（Optical Spectrum） ----
+  function applySpecMeta(meta) {
+    if (meta.run_id !== currentRun || (optMeta && optMeta.run_id === meta.run_id)) return;
+    optMeta = meta;
+    optHeat.configure(meta);
+    optLive.setWavelength(meta.wavelength);
+    $("opt-note").textContent = `${meta.wl_min.toFixed(0)}–${meta.wl_max.toFixed(0)} nm · 積分 ${meta.integration_ms} ms · 每 ${meta.interval} 秒 · 顯示 ${Math.round(meta.display_s)} 秒`;
+  }
+  function applySpecCol(msg) {
+    if (msg.run_id !== currentRun) return;
+    if (!optMeta) { resync(); return; }           // 還沒收到波長軸：重新復原
+    if (msg.idx > optHeat.total) { resync(); return; } // 有漏筆：重新抓整段
+    optHeat.addColumn(msg.idx, msg.t, msg.bins ? b64U16(msg.bins) : null);
+    if (msg.full) optLive.setData(b64U16(msg.full), msg.t); else optLive.requestDraw();
+  }
+  function restoreSpectrum(sp) {
+    if (!sp) return;
+    applySpecMeta(sp.meta);
+    if (sp.count) optHeat.addColumns(sp.start, sp.t, sp.ok, b64U16(sp.bins));
+    if (sp.latest) optLive.setData(b64U16(sp.latest.full), sp.latest.t);
+  }
+
   function setupCharts(meta, runId) {
     currentRun = runId;
+    optMeta = null; optHeat.clear(); optLive.clear();
+    $("opt-note").textContent = "AvaSpec-ULS2048L";
     specChart.configure(meta);
     $("spec-note").textContent =
       `NFFT ${meta.nfft} · overlap ${meta.noverlap} · ${meta.sample_rate} Hz · 顯示 ${meta.history_duration} 秒`;
@@ -578,7 +832,7 @@
   // ------------------------------------------------------------------
   // 感測器狀態面板（左側欄）：燈號、失敗原因分類、排查建議、最後正常時間、連續失敗次數
   // 原因代碼與 app/web_monitor.py 的 R_* / REASON_LABELS 一致；列由 monitor.html 的 data-sensor 決定，
-  // 伺服器 sensors 缺少該 key 時（例如光譜儀尚未整合）顯示「未接入」。
+  // 伺服器 sensors 缺少該 key 時（尚未接入的感測器）顯示「未接入」。
   // ------------------------------------------------------------------
   const REASON_LABELS = {
     idle: "待機", init: "初始化中", ok: "正常", stopped: "已停止",
@@ -686,6 +940,7 @@
     setDot($("lamp-temp"), s.sensors.temp.level);
     setDot($("lamp-audio"), s.sensors.audio.level);
     setDot($("lamp-distance"), s.sensors.distance.level);
+    setDot($("lamp-spectrometer"), s.sensors.spectrometer.level);
     $("audio-sub").textContent = `音訊：${s.sensors.audio.text}`;
     renderSensorPanel(s);
 
@@ -699,7 +954,7 @@
 
     // 模擬模式標示
     const sim = s.simulated || [];
-    const simNames = { temp: "溫度", distance: "距離", audio: "音訊" };
+    const simNames = { temp: "溫度", distance: "距離", audio: "音訊", spectrometer: "光譜儀" };
     const chip = $("sim-chip");
     chip.hidden = !sim.length;
     chip.textContent = `模擬模式：${sim.map((k) => simNames[k] || k).join("、")}${s.simulate_faults ? "（含故障）" : ""}`;
@@ -710,6 +965,11 @@
       const off = s.phase !== "idle" && !s.enabled[k];
       if (c.disabled !== off) { c.disabled = off; c.requestDraw(); }
     });
+
+    const optOff = s.phase !== "idle" && !s.enabled.spectrometer;
+    if (optHeat.disabled !== optOff) { optHeat.disabled = optOff; optLive.disabled = optOff; optHeat.requestDraw(); optLive.requestDraw(); }
+    const optText = s.sensors.spectrometer.text;
+    if (optLive.statusText !== optText) { optLive.statusText = optText; optLive.requestDraw(); }
 
     if (prevRun !== null && s.run_id !== prevRun && s.run_id !== currentRun) {
       setupCharts(s.audio_meta, s.run_id);
@@ -852,7 +1112,7 @@
   }
 
   async function sync() {
-    syncing = true; pendingAudio = []; pendingSeries = [];
+    syncing = true; pendingAudio = []; pendingSeries = []; pendingSpec = [];
     try {
       const { data: s } = await api("/api/state");
       const firstLoad = state === null;
@@ -861,6 +1121,7 @@
       renderState(s);
       if (s.spec_total > 0) await loadSpectrogramBulk();
       Object.entries(s.series || {}).forEach(([k, pts]) => seriesCharts[k].setAll(pts));
+      restoreSpectrum(s.spectrum);
       const now = Date.now() / 1000;
       (s.notices || []).forEach((n) => {
         if (firstLoad && now - n.time > 30) { seenNotices.add(n.id); return; }
@@ -872,6 +1133,8 @@
       queued.forEach(applyAudio);
       const queuedSeries = pendingSeries; pendingSeries = [];
       queuedSeries.forEach(applySeries);
+      const queuedSpec = pendingSpec; pendingSpec = [];
+      queuedSpec.forEach(([kind, msg]) => (kind === "meta" ? applySpecMeta(msg) : applySpecCol(msg)));
     }
   }
   let resyncTimer = 0;
@@ -905,6 +1168,14 @@
     es.addEventListener("series", (e) => {
       const msg = JSON.parse(e.data);
       if (syncing) pendingSeries.push(msg); else applySeries(msg);
+    });
+    es.addEventListener("spec_meta", (e) => {
+      const msg = JSON.parse(e.data);
+      if (syncing) pendingSpec.push(["meta", msg]); else applySpecMeta(msg);
+    });
+    es.addEventListener("spectrum", (e) => {
+      const msg = JSON.parse(e.data);
+      if (syncing) pendingSpec.push(["col", msg]); else applySpecCol(msg);
     });
     es.addEventListener("toast", (e) => toast(JSON.parse(e.data)));
     es.addEventListener("resync", () => resync()); // 伺服器端佇列塞滿（例如分頁在背景太久）時要求重新同步
