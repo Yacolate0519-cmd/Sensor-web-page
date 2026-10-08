@@ -316,7 +316,8 @@ def parse_audio_device_index(selected):
 
 
 def classify_rangefinder_error(exc):
-    """把 LKIF2Device 建構/open 的例外分類成 (reason, detail)。FileNotFoundError 是 OSError 子類，要先判斷。"""
+    """把 LKIF2Device 建構/open 的例外分類成 (reason, detail)。FileNotFoundError 是 OSError 子類，要先判斷。
+    detail 會顯示在畫面上，只放可行動的說明，不含原始例外文字（原始例外由呼叫端寫 log）。"""
     if isinstance(exc, FileNotFoundError):
         return R_DRIVER, "找不到 drivers/LKIF2.dll：確認 drivers 資料夾內有 LKIF2.dll、CmnLib.dll、KeyUsbDrv.dll"
     if isinstance(exc, AttributeError):
@@ -325,27 +326,28 @@ def classify_rangefinder_error(exc):
         return R_DRIVER, "DLL 載入失敗：缺少相依 DLL（CmnLib.dll／KeyUsbDrv.dll）或 Python 與 DLL 位元（32/64）不符"
     if isinstance(exc, RuntimeError) and "OpenDevice" in str(exc):
         return R_NOT_FOUND, "LK-G5000 未連線：檢查 USB 線、控制器電源、KEYENCE USB 驅動"
-    return R_ERROR, f"測距儀發生未預期的錯誤：{exc}"
+    return R_ERROR, "測距儀發生未預期的錯誤：詳細內容見實驗 log"
 
 
 def classify_spectrometer_error(exc):
-    """把光譜儀驅動 import／初始化／量測的例外分類成 (reason, detail)（沿用 R_* 代碼）。"""
+    """把光譜儀驅動 import／初始化／量測的例外分類成 (reason, detail)（沿用 R_* 代碼）。
+    detail 會顯示在畫面上，不含原始例外文字（原始例外由呼叫端寫 log）。"""
     msg = str(exc)
     if isinstance(exc, ImportError):
         if getattr(exc, "name", None) == "PyQt5" or "PyQt5" in msg:
             return R_DRIVER, "缺少 PyQt5：光譜儀驅動需要 PyQt5（uv sync --extra spectrometer）"
-        return R_DRIVER, f"光譜儀驅動載入失敗：{msg}"
+        return R_DRIVER, "光譜儀驅動載入失敗：詳細內容見實驗 log"
     if isinstance(exc, FileNotFoundError):
         return R_DRIVER, "找不到 AvaSpec 驅動檔：Windows 需要 drivers/avaspecx64.dll，macOS／Linux 需安裝 AvaSpec 原生函式庫"
     if isinstance(exc, OSError):
-        return R_DRIVER, f"AvaSpec DLL 載入失敗：缺少相依檔，或 Python 與 DLL 位元（32/64）不符（{msg}）"
+        return R_DRIVER, f"AvaSpec DLL 載入失敗：缺少相依檔，或 Python 與 DLL 位元（32/64）不符"
     if isinstance(exc, AttributeError):
-        return R_DRIVER, f"此系統無法載入 AvaSpec 驅動（{msg}）"
+        return R_DRIVER, "此系統無法載入 AvaSpec 驅動"
     if "沒有找到光譜儀" in msg or "無可用設備" in msg:
         return R_NOT_FOUND, "找不到光譜儀：檢查 USB 線、電源與 AvaSpec 驅動（裝置管理員是否看得到 AvaSpec）"
     if "等待超時" in msg:
         return R_NO_DATA, "光譜儀沒有回傳資料（等待超時）：確認光譜儀未被其他程式佔用，並檢查積分時間與觸發設定"
-    return R_ERROR, f"光譜儀發生未預期的錯誤：{msg}"
+    return R_ERROR, "光譜儀發生未預期的錯誤：詳細內容見實驗 log"
 
 
 # 測距儀 FloatResult 非 VALID 時的分類（Unknown/INVALID 另外處理）
@@ -364,7 +366,8 @@ def diagnose_audio_device(index):
     try:
         p = pyaudio.PyAudio()
     except BaseException as e:  # noqa: BLE001
-        return R_DRIVER, f"音訊系統（PortAudio/PyAudio）初始化失敗：確認音訊驅動與 PyAudio 已正確安裝（{e}）"
+        slog(ERROR, "音訊", f"PortAudio/PyAudio 初始化失敗: {e}", e)
+        return R_DRIVER, "音訊系統（PortAudio/PyAudio）初始化失敗：確認音訊驅動與 PyAudio 已正確安裝"
     try:
         inputs = []
         for i in range(p.get_device_count()):
@@ -984,6 +987,7 @@ class MonitorService:
             dev.close()
             return True, None, (R_OK, "")
         except BaseException as e:  # noqa: BLE001  macOS 上 ctypes.WinDLL 不存在 → AttributeError
+            slog(WARN, SENSOR_NAMES["distance"], f"預檢：測距儀初始化失敗: {type(e).__name__}: {e}")
             return False, "• 測距儀初始化失敗，距離監測將被停用", classify_rangefinder_error(e)
 
     def check_spectrometer(self):
@@ -997,6 +1001,7 @@ class MonitorService:
                 slog(WARN, SENSOR_NAMES["spectrometer"], f"預檢後關閉光譜儀失敗: {e}")
             return True, None, (R_OK, "")
         except Exception as e:  # noqa: BLE001
+            slog(WARN, SENSOR_NAMES["spectrometer"], f"預檢：光譜儀初始化失敗: {type(e).__name__}: {e}")
             return False, "• 光譜儀初始化失敗，光譜儀監測將被停用", classify_spectrometer_error(e)
 
     def validate_params(self, raw):
@@ -1816,7 +1821,7 @@ class MonitorService:
                         self.notify("warning", "警告", f"測距儀錯誤: {e}\n監測將繼續但不會讀取距離數據", src="距離")
                     self.set_sensor("distance", text="連接錯誤", value=None,
                                     level="error" if disconnected else "warn",
-                                    reason=R_ERROR, detail=f"通訊錯誤：USB 可能中斷（{e}）")
+                                    reason=R_ERROR, detail="通訊錯誤：USB 可能中斷")
                 stop_event.wait(interval)
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "距離", f"測距儀監測錯誤: {e}", e)

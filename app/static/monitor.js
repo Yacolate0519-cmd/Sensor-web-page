@@ -959,7 +959,6 @@
     document.querySelectorAll("#settings input, #settings select, #settings .btn-icon")
       .forEach((el) => { el.disabled = locked; });
 
-    renderRecording(s);
 
     // 模擬模式標示
     const sim = s.simulated || [];
@@ -983,52 +982,6 @@
     if (prevRun !== null && s.run_id !== prevRun && s.run_id !== currentRun) {
       setupCharts(s.audio_meta, s.run_id);
     }
-  }
-
-  // ------------------------------------------------------------------
-  // 存檔資訊列：資料夾與各檔案大小／筆數
-  // ------------------------------------------------------------------
-  function fmtBytes(n) {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-    return `${(n / 1024 ** 3).toFixed(2)} GB`;
-  }
-  function fmtDuration(sec) {
-    const t = Math.floor(sec), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = t % 60;
-    return h ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
-  }
-  function renderRecording(s) {
-    const bar = $("recbar"), rec = s.recording;
-    if (!rec) { bar.hidden = true; return; }
-    bar.hidden = false;
-    const job = s.spectrogram_job;
-    let title = "資料存檔中", level = "ok";
-    if (s.phase === "stopping") {
-      title = job && job.status === "running"
-        ? `頻譜 CSV 產生中… ${Math.round((job.progress || 0) * 100)}%（原始資料已安全落地）` : "關閉檔案中…";
-      level = "busy";
-    } else if (s.phase !== "running") { title = "本次實驗資料"; level = "idle"; }
-    $("rec-title").textContent = title;
-    $("rec-dot").dataset.level = level;
-    $("rec-dir").textContent = rec.dir;
-    const ul = $("rec-files"); ul.innerHTML = "";
-    rec.files.forEach((f) => {
-      const li = document.createElement("li");
-      const name = document.createElement("span"); name.className = "fname"; name.textContent = f.name; name.title = f.name;
-      const stat = document.createElement("span"); stat.className = "fstat";
-      let detail = fmtBytes(f.bytes || 0);
-      if (f.kind === "wav") detail += ` · ${fmtDuration(f.seconds || 0)} · ${f.channels} ch`;
-      else if (f.kind === "csv") detail += ` · ${f.rows} 筆`;
-      else if (f.rows) detail += ` · ${f.rows} 列`;
-      stat.textContent = detail;
-      li.append(name, stat);
-      if (f.write_error) {
-        const e = document.createElement("span"); e.className = "ferr"; e.textContent = "寫入失敗"; e.title = f.write_error;
-        li.append(e);
-      }
-      ul.appendChild(li);
-    });
   }
 
   // ------------------------------------------------------------------
@@ -1213,7 +1166,6 @@
       if (!state || state.phase !== "running") return;
       const t = JSON.parse(e.data);
       state.elapsed = t.elapsed; state.elapsed_int = t.elapsed_int;
-      if (t.recording) { state.recording = t.recording; renderRecording(state); }
       renderTime(t.elapsed_int, t.elapsed, t.duration, state.phase);
     });
     es.addEventListener("audio", (e) => {

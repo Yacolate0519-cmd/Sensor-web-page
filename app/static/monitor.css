@@ -234,21 +234,6 @@ input[aria-invalid="true"] { border-color: var(--err); }
 #spec-tip { width: 240px; }
 .help-btn:hover + .help-tip, .help-btn:focus-visible + .help-tip { visibility: visible; opacity: 1; }
 
-/* ---------- 存檔資訊列 ---------- */
-.recbar {
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0;
-}
-.recbar[hidden] { display: none; }
-.recbar-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.recbar-title { font-size: 12.5px; font-weight: 600; }
-.recbar-dir { font-family: var(--mono); font-size: 12px; color: var(--text-2); word-break: break-all; }
-.recbar-files { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 18px; }
-.recbar-files li { font-size: 12px; color: var(--text-3); display: inline-flex; gap: 6px; min-width: 0; max-width: 100%; }
-.recbar-files .fname { font-family: var(--mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recbar-files .fstat { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.recbar-files .ferr { color: var(--err); }
-
 /* ---------- 感測器狀態面板（左側欄，開始/停止按鈕下方） ---------- */
 /* 狀態卡內四張感測器卡：底色依 data-level（ok 綠、error 紅、idle 橙） */
 .sensor-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
