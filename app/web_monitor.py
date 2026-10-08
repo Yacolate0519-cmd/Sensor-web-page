@@ -247,6 +247,20 @@ def list_com_ports():
         return {"ports": [], "default": "", "error": str(e)}
 
 
+# 預設麥克風：名稱含這些關鍵字的第一個輸入設備（不分大小寫）；可用環境變數 SENSOR_AUDIO_PREFER（逗號分隔）覆寫。
+# 實驗室收音用 RØDE VideoMic NTG。PyAudio 依 index 列出時 MME 排最前面，MME 可接受任意採樣率（WASAPI 共享模式不行）。
+PREFERRED_AUDIO_KEYWORDS = tuple(
+    k.strip() for k in os.environ.get("SENSOR_AUDIO_PREFER", "RØDE,RODE").split(",") if k.strip())
+
+
+def fix_device_name(name):
+    """Windows 的 PyAudio 會把 UTF-8 裝置名稱當 cp1252 解（RØDE → RÃ˜DE）；能還原就還原，否則原樣回傳。"""
+    try:
+        return name.encode("cp1252").decode("utf-8")
+    except UnicodeError:
+        return name
+
+
 def list_audio_devices():
     """對應 main_csv.refresh_audio_devices：只列出有輸入通道的設備。"""
     try:
@@ -256,18 +270,21 @@ def list_audio_devices():
             for i in range(p.get_device_count()):
                 info = p.get_device_info_by_index(i)
                 if info["maxInputChannels"] > 0:
+                    name = fix_device_name(info["name"])
                     devices.append({
                         "index": i,
-                        "name": info["name"],
-                        "display_name": f"{i}: {info['name']}",
+                        "name": name,
+                        "display_name": f"{i}: {name}",
                         "channels": int(info["maxInputChannels"]),
                         "sample_rate": float(info["defaultSampleRate"]),
                     })
         finally:
             p.terminate()
         if devices:
+            preferred = next((d for d in devices
+                              if any(k.lower() in d["name"].lower() for k in PREFERRED_AUDIO_KEYWORDS)), devices[0])
             return {"devices": devices, "status": "ok", "placeholder": None,
-                    "default": devices[0]["display_name"]}
+                    "default": preferred["display_name"]}
         return {"devices": [], "status": "none", "placeholder": AUDIO_NONE, "default": AUDIO_NONE}
     except BaseException as e:  # noqa: BLE001  PyAudio 初始化失敗也不可拖垮伺服器
         slog(ERROR, SRC_SYSTEM, f"刷新音訊設備錯誤: {e}", e)
