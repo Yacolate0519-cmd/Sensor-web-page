@@ -13,7 +13,7 @@
     square: [["label_specimen_length", "長"], ["label_specimen_width", "寬"], ["label_specimen_thickness", "厚"]],
     circle: [["label_specimen_radius", "半徑"], ["label_specimen_thickness", "厚度"]],
   };
-  PARAM_KEYS.push("label_metal", "label_electrolyte", "label_additive", "label_power_mode",
+  PARAM_KEYS.push("label_metal", "label_electrolyte", "label_additive",
     "label_specimen_length", "label_specimen_width", "label_specimen_thickness", "label_specimen_radius");
   const AUDIO_PLACEHOLDERS = ["無可用音訊設備", "音訊設備檢測失敗"];
 

@@ -120,8 +120,9 @@ LABEL_FIELDS = [
     ("label_metal", "metal", "金屬種類", True),
     ("label_electrolyte", "electrolyte", "電解液配方與濃度", True),
     ("label_additive", "additive", "添加物", False),
-    ("label_power_mode", "power_mode", "電源模式", False),
 ]
+# 電源模式目前固定，不在介面顯示；之後要開放選擇再改回 LABEL_FIELDS
+POWER_MODE = "雙極脈衝"
 # 試片形狀 → (中文名稱, [(表單 key, JSON key, 中文名稱)])；尺寸一律 mm，必填且須 > 0
 SPECIMEN_SHAPES = {
     "square": ("正方形", [("label_specimen_length", "length_mm", "長"),
@@ -1060,7 +1061,7 @@ class MonitorService:
             if not (math.isfinite(num) and num > 0):
                 raise ValueError(f"實驗標籤錯誤: 試片{label}必須大於 0 mm")
             specimen[json_key] = num
-        return {"metal": labels.pop("metal"), "specimen": specimen, **labels}
+        return {"metal": labels.pop("metal"), "specimen": specimen, **labels, "power_mode": POWER_MODE}
 
     @staticmethod
     def disk_check():
