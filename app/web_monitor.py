@@ -65,7 +65,7 @@ import sim_devices  # noqa: E402
 import spectrometer_driver  # 只定義包裝類別；真正的驅動延遲到預檢／worker 啟動才 import
 from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import list_candidate_ports  # noqa: E402
-from temp_py_package.reader import check_port_present, read_temperature_diag
+from temp_py_package.reader import check_port_present, find_temperature_port, read_temperature_diag
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
@@ -124,6 +124,9 @@ LABEL_FIELDS = [
     ("label_power_mode", "power_mode", "電源模式", False),
 ]
 DEFAULT_PARAMS.update({form_key: "" for form_key, *_ in LABEL_FIELDS})
+
+# 溫度 COM 欄位留空或填這些值＝開始前自動偵測
+AUTO_COM_VALUES = ("", "auto", "自動", "自動偵測")
 
 REFL_MODE_LABELS = {0: "0-漫反射", 1: "1-鏡面反射"}
 STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTERM", "sigbreak": "Ctrl+Break",
@@ -235,13 +238,14 @@ def setup_logging():
 # 裝置列舉
 # ---------------------------------------------------------------------------
 def list_com_ports():
-    """對應 main_csv.refresh_com_ports：候選埠排序後回傳，第一個為預設值。"""
+    """對應 main_csv.refresh_com_ports：候選埠排序後回傳；預設值留空＝自動偵測。"""
     try:
         ports = [
             {"device": p.device, "description": p.description or ""}
             for p in list_candidate_ports()
         ]
-        return {"ports": ports, "default": ports[0]["device"] if ports else "", "error": None}
+        # 預設留空＝自動偵測（開始前探測哪個 USB 轉序列埠接著溫度計）；清單仍列出所有埠供手動指定
+        return {"ports": ports, "default": "", "error": None}
     except Exception as e:  # noqa: BLE001
         slog(ERROR, SRC_SYSTEM, f"刷新COM端口錯誤: {e}", e)
         return {"ports": [], "default": "", "error": str(e)}
@@ -1051,10 +1055,22 @@ class MonitorService:
         com = str(raw.get("com_port", "") or "").strip()
         # diag：每個感測器預檢時的 (reason, detail)；被停用者在狀態面板顯示「未啟用」並帶出底層原因
         diag = {k: (R_OK, "") for k in enabled}
-        if not com and "temp" not in sim:
-            warnings.append("• 未選擇溫度感測器COM端口，溫度監測將被停用")
-            enabled["temp"] = False
-            diag["temp"] = (R_DISABLED, "未選擇 COM 埠")
+        if com.lower() in AUTO_COM_VALUES and "temp" not in sim:
+            try:
+                found, tried = find_temperature_port()
+            except Exception as e:  # noqa: BLE001
+                found, tried = None, []
+                slog(ERROR, SENSOR_NAMES["temp"], f"自動偵測 COM 埠失敗: {e}", e)
+            if found:
+                com = found
+                slog(INFO, SENSOR_NAMES["temp"], f"自動偵測：溫度計在 {found}（已探測 {'、'.join(tried)}）")
+            else:
+                detail = (f"自動偵測找不到溫度計：已探測 {'、'.join(tried)}，都沒有正確回應；"
+                          "檢查感測器電源、RS485 A/B 接線、站號(0x03)/鮑率(57600)，或手動輸入 COM 埠") if tried \
+                    else "自動偵測找不到任何 USB 轉序列埠：USB-RS485 轉接器未插上，或驅動未安裝"
+                warnings.append(f"• {detail}，溫度監測將被停用")
+                enabled["temp"] = False
+                diag["temp"] = (R_NOT_FOUND, detail)
         elif com and "temp" not in sim:
             try:  # 只查埠是否存在（不開埠）；找不到時不停用，讓 worker 持續回報並可在插上後自動恢復
                 diag["temp"] = check_port_present(com) or (R_OK, "")
@@ -1109,7 +1125,8 @@ class MonitorService:
              f"預檢結果：{'通過' if not errors else '未通過'}（啟用 "
              f"{'、'.join(SENSOR_NAMES[k] for k in enabled if enabled[k]) or '無'}；警告 {len(warnings)} 項）")
         return {"ok": not errors, "errors": errors, "warnings": warnings,
-                "enabled": enabled, "parsed": parsed, "disk": disk, "diag": self.preflight_reasons}
+                "enabled": enabled, "parsed": parsed, "com_port": com if enabled["temp"] else "",
+                "disk": disk, "diag": self.preflight_reasons}
 
     def _show_preflight(self, enabled, diag):
         """預檢結果立刻推到狀態面板，讓使用者在確認 dialog 前就看到各感測器為何被停用／可能有問題。
@@ -1158,7 +1175,7 @@ class MonitorService:
         while os.path.exists(os.path.join(DATA_DIR, experiment_id)):  # 同一秒內重新開始時避免撞名
             start_ts += 1
             experiment_id = "EXP_" + datetime.datetime.fromtimestamp(start_ts).strftime("%Y%m%d_%H%M%S")
-        com_port = str(raw.get("com_port") or "").strip()
+        com_port = pf["com_port"]  # 自動偵測時是偵測到的埠
         audio_sel = str(raw.get("audio_device") or "")
         info = {
             "experiment_id": experiment_id,
@@ -1228,6 +1245,7 @@ class MonitorService:
             self.spectrogram_job = None
             self.write_failures = set()
             self.params = {k: str(raw.get(k, DEFAULT_PARAMS[k])) for k in DEFAULT_PARAMS}
+            self.params["com_port"] = com_port  # 畫面顯示實際使用的埠（自動偵測的結果）
             self.enabled = enabled
             self.duration = p["duration"]
             self.sample_rate = p["sample_rate"]

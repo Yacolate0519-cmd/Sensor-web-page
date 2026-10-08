@@ -190,7 +190,7 @@ uv run python main.py --help       # 所有參數
 | `experiment_<id>.log` | 這次實驗的完整 log（開始參數、各感測器狀態變化與失敗原因、恢復、通知、停止與存檔摘要），每行即時寫入；伺服器層級的 log 另存在 `logs/server_YYYYMMDD.log` | 數十 KB |
 
 - 合計約 **460 MB／小時**，8 小時約 3.7 GB。預檢時若存檔磁碟剩餘空間 < 2 GB 會警告；錄製中寫檔失敗（例如磁碟滿）會跳通知並記錄在 json，監測不會靜默中斷。
-- 只有啟用的感測器才會建檔（例如沒選 COM 埠就不會有 temperature CSV）。
+- 只有啟用的感測器才會建檔（例如自動偵測找不到溫度計就不會有 temperature CSV）。
 - 頻譜 CSV 以分塊方式計算，記憶體用量約 150 MB、與錄音長度無關；1 小時錄音約 6 秒產生完。若中途失敗，可事後補產生：`uv run python app/chunked_spectrogram.py Sensor_Data/EXP_YYYYmmdd_HHMMSS`。
 - 「頻譜圖顯示長度」只影響畫面（上限 600 秒），不影響存檔。
 
@@ -208,6 +208,7 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 - 沒有硬體：用 `--simulate spectrometer`（或 `all`）。真實模式需要：Windows 64 位元、`drivers/avaspecx64.dll`（AvaSpec 官方驅動）、PyQt5（`uv sync --extra spectrometer`，驅動 import 時需要）、USB 接上光譜儀。缺任何一項時預檢會停用光譜儀並在狀態面板顯示原因，不影響其他感測器。
 
 #### 常見問題排除
+- **溫度計 COM 埠（預設自動偵測）**：COM 欄位留空（或填 `auto`），按開始時會逐一探測 USB 轉序列埠，回應的站號、功能碼與 CRC 都正確的那個就是溫度計，log 會記「自動偵測：溫度計在 COMx」。只探測 USB 轉接器，不碰主機板內建 COM。COM 號碼會隨 USB 孔改變（尤其沒有序號的 PL2303），所以不必記住號碼；也可以在欄位手動輸入埠名。
 - **找不到 COM 埠**：確認 USB 轉 RS485 轉換器已接上並安裝驅動（常見晶片 CH340、FTDI、CP210x、PL2303），在「裝置管理員 → 連接埠 (COM 和 LPT)」確認出現 `COMx`；也可以在欄位直接輸入埠名。
 - **麥克風錄到全為 0／沒有音訊設備**：Windows「設定 → 隱私權與安全性 → 麥克風」開啟「麥克風存取」與「讓桌面應用程式存取麥克風」；確認輸入裝置沒被停用，並關閉占用麥克風的程式（Teams、Zoom）。macOS 則在「系統設定 → 隱私權與安全性 → 麥克風」允許終端機。
 - **LKIF2.dll 載入失敗／測距儀初始化失敗**：需要 64 位元 Python 搭配 64 位元 LKIF2.dll（專案附的版本），`CmnLib.dll`、`KeyUsbDrv.dll` 要一起放在 `drivers/`；安裝 KEYENCE 的 USB 驅動並確認裝置管理員中有控制器。macOS 無法使用測距儀。

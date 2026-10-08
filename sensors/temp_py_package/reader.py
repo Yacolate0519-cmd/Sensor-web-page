@@ -1,7 +1,9 @@
 import serial
 import time
+from .crc import calculate_crc
 from .frame import build_request_frame
 from .parser import parse_response, convert_raw_to_temperature
+from .port_finder import list_candidate_ports
 
 def read_temperature(ser, slave_addr=0x03, start_addr=0x0000, num_words=1):
     """
@@ -66,6 +68,47 @@ def check_port_present(port):
     if not names:
         detail += "（系統目前完全偵測不到任何 COM 埠）"
     return "not_found", detail
+
+
+def probe_temperature_port(port, baudrate=57600, slave_addr=0x03, timeout=1):
+    """
+    自動偵測用：送一次讀取，回應的長度、站號、功能碼、位元組數、CRC 全部正確才算是溫度計。
+    （一般讀值沿用不驗 CRC 的舊邏輯；偵測要嚴格，才不會把其他序列裝置的回應誤認成溫度計。）
+    :return: 溫度（是溫度計）或 None
+    """
+    try:
+        ser = serial.Serial(port, baudrate, bytesize=8, parity='N', stopbits=1, timeout=timeout)
+    except Exception:  # noqa: BLE001  打不開（被占用、拔掉）就當作不是
+        return None
+    try:
+        ser.reset_input_buffer()
+        ser.write(build_request_frame(slave_addr, 0x0000, 1))
+        response = ser.read(7)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        ser.close()
+    if len(response) != 7 or response[0] != slave_addr or response[1] != 0x03 or response[2] != 2:
+        return None
+    crc = calculate_crc(response[:5])
+    if response[5] != (crc & 0xFF) or response[6] != (crc >> 8):
+        return None
+    return convert_raw_to_temperature(parse_response(response))
+
+
+def find_temperature_port(baudrate=57600):
+    """
+    逐一探測 USB 轉序列埠（有 VID 者；不碰主機板內建 COM），回傳 (找到的埠或 None, 已探測的埠清單)。
+    COM 號碼會隨 USB 孔改變（例如沒有序號的 Prolific），所以每次開始前重新找。
+    """
+    tried = []
+    for p in list_candidate_ports():
+        if p.vid is None:
+            continue
+        tried.append(p.device)
+        if probe_temperature_port(p.device, baudrate) is not None:
+            return p.device, tried
+    return None, tried
 
 
 def read_temperature_diag(port, baudrate=57600):
