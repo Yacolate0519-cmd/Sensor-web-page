@@ -24,33 +24,6 @@
     <!-- 左側：設定與控制 -->
     <aside class="sidebar" aria-label="設定">
       <form id="settings" autocomplete="off" novalidate>
-        <section class="group">
-          <h2>實驗標籤</h2>
-          <div class="grid-2">
-            <label class="field">
-              <span class="field-label">金屬種類 <b class="req">*</b></span>
-              <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
-            </label>
-            <label class="field">
-              <span class="field-label">試片種類 <b class="req">*</b></span>
-              <input id="label_specimen" name="label_specimen" placeholder="例：20×20×3 mm 板材" spellcheck="false">
-            </label>
-            <label class="field span-2">
-              <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
-              <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
-            </label>
-            <label class="field span-2">
-              <span class="field-label">添加物（選填）</span>
-              <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
-            </label>
-            <label class="field span-2">
-              <span class="field-label">電源模式</span>
-              <select id="label_power_mode" name="label_power_mode">
-                <option value="雙極脈衝">雙極脈衝</option>
-              </select>
-            </label>
-          </div>
-        </section>
 
         <section class="group">
           <h2>裝置</h2>
@@ -147,7 +120,7 @@
       </form>
 
       <div class="controls">
-        <button type="button" class="btn btn-start" id="btn-start">開始監測</button>
+        <button type="button" class="btn btn-start" id="btn-start">輸入實驗標籤</button>
         <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止監測</button>
       </div>
     </aside>
@@ -224,6 +197,55 @@
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <!-- 實驗標籤：按「輸入實驗標籤」後填寫，按「開始監測」送出（寫入 experiment_<id>.json 的 experiment_labels） -->
+  <dialog id="dlg-labels" class="dlg-labels">
+    <form method="dialog" class="dlg-body" id="labels-form" autocomplete="off" novalidate>
+      <h2>實驗標籤</h2>
+      <label class="field">
+        <span class="field-label">金屬種類 <b class="req">*</b></span>
+        <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
+      </label>
+      <fieldset class="field specimen">
+        <legend class="field-label">試片 <b class="req">*</b></legend>
+        <div class="seg" role="radiogroup" aria-label="試片形狀">
+          <label><input type="radio" name="label_specimen_shape" value="square" checked><span>正方形</span></label>
+          <label><input type="radio" name="label_specimen_shape" value="circle"><span>圓形</span></label>
+        </div>
+        <div class="dims" data-shape="square">
+          <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（mm）"></div>
+          <span class="dims-x">×</span>
+          <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（mm）"></div>
+          <span class="dims-x">×</span>
+          <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（mm）"><span>mm</span></div>
+        </div>
+        <div class="dims" data-shape="circle" hidden>
+          <div class="input-unit"><input id="label_specimen_radius" inputmode="decimal" placeholder="半徑" aria-label="半徑（mm）"><span>mm</span></div>
+          <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（mm）"><span>mm</span></div>
+        </div>
+        <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 mm</span>
+      </fieldset>
+      <label class="field">
+        <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
+        <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
+      </label>
+      <label class="field">
+        <span class="field-label">添加物（選填）</span>
+        <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
+      </label>
+      <label class="field">
+        <span class="field-label">電源模式</span>
+        <select id="label_power_mode" name="label_power_mode">
+          <option value="雙極脈衝">雙極脈衝</option>
+        </select>
+      </label>
+      <p class="labels-error" id="labels-error" role="alert" hidden></p>
+      <div class="dlg-actions">
+        <button type="button" class="btn btn-ghost" id="labels-cancel">取消</button>
+        <button value="ok" class="btn btn-start" id="labels-ok">開始監測</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="dlg">
     <form method="dialog" class="dlg-body">

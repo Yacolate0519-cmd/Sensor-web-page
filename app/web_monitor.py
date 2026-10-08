@@ -115,15 +115,24 @@ DEFAULT_PARAMS = {
 }
 
 # 實驗標籤：開始監測前由使用者填寫，寫入 experiment_<id>.json 的 experiment_labels。
-# (表單 key, JSON key, 中文名稱, 必填)
+# (表單 key, JSON key, 中文名稱, 必填)；試片另見 SPECIMEN_SHAPES
 LABEL_FIELDS = [
     ("label_metal", "metal", "金屬種類", True),
-    ("label_specimen", "specimen", "試片種類", True),
     ("label_electrolyte", "electrolyte", "電解液配方與濃度", True),
     ("label_additive", "additive", "添加物", False),
     ("label_power_mode", "power_mode", "電源模式", False),
 ]
+# 試片形狀 → (中文名稱, [(表單 key, JSON key, 中文名稱)])；尺寸一律 mm，必填且須 > 0
+SPECIMEN_SHAPES = {
+    "square": ("正方形", [("label_specimen_length", "length_mm", "長"),
+                          ("label_specimen_width", "width_mm", "寬"),
+                          ("label_specimen_thickness", "thickness_mm", "厚")]),
+    "circle": ("圓形", [("label_specimen_radius", "radius_mm", "半徑"),
+                        ("label_specimen_thickness", "thickness_mm", "厚")]),
+}
 DEFAULT_PARAMS.update({form_key: "" for form_key, *_ in LABEL_FIELDS})
+DEFAULT_PARAMS.update({k: "" for _, dims in SPECIMEN_SHAPES.values() for k, *_ in dims})
+DEFAULT_PARAMS["label_specimen_shape"] = "square"
 
 # 溫度 COM 欄位留空或填這些值＝開始前自動偵測
 AUTO_COM_VALUES = ("", "auto", "自動", "自動偵測")
@@ -1027,14 +1036,31 @@ class MonitorService:
 
     @staticmethod
     def validate_labels(raw):
-        """實驗標籤：必填欄位不可空白；選填欄位留空時存成 None。"""
+        """實驗標籤：必填欄位不可空白；選填欄位留空時存成 None。
+        試片存成 {"shape": "square"|"circle", <尺寸>_mm: float, ...}。"""
         labels = {}
         for form_key, json_key, label, required in LABEL_FIELDS:
             value = str(raw.get(form_key, "") or "").strip()
             if not value and required:
                 raise ValueError(f"實驗標籤未填: {label}為必填")
             labels[json_key] = value or None
-        return labels
+        shape = str(raw.get("label_specimen_shape", "") or "").strip()
+        if shape not in SPECIMEN_SHAPES:
+            raise ValueError("實驗標籤未填: 試片形狀須為正方形或圓形")
+        shape_name, dims = SPECIMEN_SHAPES[shape]
+        specimen = {"shape": shape}
+        for form_key, json_key, label in dims:
+            value = str(raw.get(form_key, "") or "").strip()
+            if not value:
+                raise ValueError(f"實驗標籤未填: 試片（{shape_name}）{label}為必填")
+            try:
+                num = float(value)
+            except ValueError:
+                raise ValueError(f"實驗標籤錯誤: 試片{label}必須是數字（mm）") from None
+            if not (math.isfinite(num) and num > 0):
+                raise ValueError(f"實驗標籤錯誤: 試片{label}必須大於 0 mm")
+            specimen[json_key] = num
+        return {"metal": labels.pop("metal"), "specimen": specimen, **labels}
 
     @staticmethod
     def disk_check():

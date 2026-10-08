@@ -6,13 +6,15 @@
   const PARAM_KEYS = ["com_port", "audio_device", "sample_rate",
     "update_interval", "history_duration", "refl_mode", "distance_interval",
     "spec_interval", "spec_integration_ms"];
-  // 實驗標籤：[表單 id, 名稱]，順序即確認對話框的列出順序
-  const LABEL_FIELDS = [
-    ["label_metal", "金屬種類"], ["label_specimen", "試片種類"],
-    ["label_electrolyte", "電解液配方與濃度"], ["label_additive", "添加物"],
-    ["label_power_mode", "電源模式"],
-  ];
-  PARAM_KEYS.push(...LABEL_FIELDS.map(([k]) => k));
+  // 實驗標籤（在「輸入實驗標籤」視窗內填寫）：[表單 id, 名稱]，必填檢查與 app/web_monitor.py 的 LABEL_FIELDS 一致
+  const LABEL_REQUIRED = [["label_metal", "金屬種類"], ["label_electrolyte", "電解液配方與濃度"]];
+  // 試片尺寸（mm）：形狀 → [表單 id, 名稱]；對應 web_monitor.py 的 SPECIMEN_SHAPES
+  const SPECIMEN_DIMS = {
+    square: [["label_specimen_length", "長"], ["label_specimen_width", "寬"], ["label_specimen_thickness", "厚"]],
+    circle: [["label_specimen_radius", "半徑"], ["label_specimen_thickness", "厚度"]],
+  };
+  PARAM_KEYS.push("label_metal", "label_electrolyte", "label_additive", "label_power_mode",
+    "label_specimen_length", "label_specimen_width", "label_specimen_thickness", "label_specimen_radius");
   const AUDIO_PLACEHOLDERS = ["無可用音訊設備", "音訊設備檢測失敗"];
 
   let theme = readTheme();
@@ -819,6 +821,7 @@
       const el = $(k);
       out[k] = el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value;
     });
+    out.label_specimen_shape = specimenShape();
     return out;
   }
   function writeForm(params) {
@@ -829,6 +832,8 @@
       else if (el.tagName === "SELECT") ensureOption(el, params[k]);
       else el.value = params[k];
     });
+    if (params.label_specimen_thickness !== undefined) $("label_specimen_thickness_c").value = params.label_specimen_thickness;
+    if (SPECIMEN_DIMS[params.label_specimen_shape]) setSpecimenShape(params.label_specimen_shape);
   }
 
   // ------------------------------------------------------------------
@@ -1069,6 +1074,51 @@
   // ------------------------------------------------------------------
   // 開始／停止
   // ------------------------------------------------------------------
+  // ------------------------------------------------------------------
+  // 實驗標籤視窗：按「輸入實驗標籤」開啟，填完按「開始監測」才進入預檢與開始流程
+  // ------------------------------------------------------------------
+  function specimenShape() {
+    const r = document.querySelector('input[name="label_specimen_shape"]:checked');
+    return r ? r.value : "square";
+  }
+  function setSpecimenShape(shape) {
+    document.querySelectorAll('input[name="label_specimen_shape"]').forEach((r) => { r.checked = r.value === shape; });
+    document.querySelectorAll("#labels-form .dims").forEach((d) => { d.hidden = d.dataset.shape !== shape; });
+    $("specimen-hint").textContent = shape === "circle" ? "半徑、厚度，單位 mm" : "長 × 寬 × 厚，單位 mm";
+  }
+  function labelErrors() {
+    const errs = LABEL_REQUIRED.filter(([k]) => !$(k).value.trim()).map(([, name]) => `${name}為必填`);
+    SPECIMEN_DIMS[specimenShape()].forEach(([k, name]) => {
+      const v = $(k).value.trim(), n = Number(v);
+      if (!v) errs.push(`試片${name}為必填`);
+      else if (!(Number.isFinite(n) && n > 0)) errs.push(`試片${name}必須是大於 0 的數字（mm）`);
+    });
+    return errs;
+  }
+  function openLabels() {
+    if (busy || (state && (state.phase === "running" || state.phase === "stopping"))) return;
+    $("labels-error").hidden = true;
+    $("dlg-labels").showModal();
+    $("label_metal").focus();
+  }
+  document.querySelectorAll('input[name="label_specimen_shape"]').forEach((r) =>
+    r.addEventListener("change", () => setSpecimenShape(r.value)));
+  // 正方形與圓形共用同一個厚度值（存檔 key 只有 label_specimen_thickness）
+  $("label_specimen_thickness").addEventListener("input", (e) => { $("label_specimen_thickness_c").value = e.target.value; });
+  $("label_specimen_thickness_c").addEventListener("input", (e) => { $("label_specimen_thickness").value = e.target.value; });
+  $("labels-cancel").addEventListener("click", () => $("dlg-labels").close("cancel"));
+  $("labels-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const errs = labelErrors();
+    if (errs.length) {
+      $("labels-error").textContent = errs.join("、");
+      $("labels-error").hidden = false;
+      return;
+    }
+    $("dlg-labels").close("ok");
+    onStart();
+  });
+
   async function onStart() {
     if (busy) return;
     busy = true; $("btn-start").disabled = true;
@@ -1084,13 +1134,6 @@
         });
         if (!go) return;
       }
-      // 最後確認實驗標籤，避免沿用上一筆實驗的設定
-      const labelsOk = await dialog({
-        title: "確認實驗標籤", lead: "以下標籤會寫入這筆實驗的 json：",
-        items: LABEL_FIELDS.map(([k, label]) => `${label}：${String(params[k] || "").trim() || "（未填）"}`),
-        question: "標籤正確嗎？", okText: "開始監測", cancelText: "返回修改",
-      });
-      if (!labelsOk) return;
       const r = await api("/api/start", { method: "POST", body: { ...params, confirm: true } });
       if (!r.ok) {
         const msgs = (r.data && (r.data.errors || r.data.warnings)) || [`啟動監測失敗 (HTTP ${r.status})`];
@@ -1201,7 +1244,7 @@
   // ------------------------------------------------------------------
   // 初始化
   // ------------------------------------------------------------------
-  $("btn-start").addEventListener("click", onStart);
+  $("btn-start").addEventListener("click", openLabels);
   $("btn-stop").addEventListener("click", onStop);
   $("refresh-com").addEventListener("click", () => loadCom(false));
   $("refresh-audio").addEventListener("click", () => loadAudio(true));
