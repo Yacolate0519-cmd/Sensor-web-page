@@ -1387,7 +1387,7 @@ class MonitorService:
             self.write_failures.add(key)
         if first:
             self.notify("error", "寫檔失敗",
-                        f"{key} 資料寫入失敗（磁碟可能已滿或被拔除）：{exc}\n監測仍在進行，請盡快釋放空間或停止監測。")
+                        f"{key} 資料寫入失敗（磁碟可能已滿或被拔除）。\n監測仍在進行，請盡快釋放空間或停止監測。")
 
     # ---------------- 停止與存檔 ----------------
     def request_stop(self, reason="manual"):
@@ -1421,7 +1421,7 @@ class MonitorService:
             self._save_all(recorder, reason)
         except Exception as e:  # noqa: BLE001
             slog(ERROR, SRC_SYSTEM, f"存檔流程錯誤: {e}", e)
-            self.notify("warning", "警告", f"數據儲存失敗: {e}")
+            self.notify("warning", "警告", "數據儲存失敗，詳細內容見實驗 log")
             if recorder:
                 recorder.add_error(f"存檔流程錯誤: {e}")
         slog(INFO, SRC_SYSTEM, "停止流程結束，實驗 log 關閉")
@@ -1507,7 +1507,7 @@ class MonitorService:
                     recorder.update(spectrogram={"status": "error", "error": str(e)})
                     self._set_spec_job("error", None, str(e))
                     self.notify("warning", "頻譜 CSV 產生失敗",
-                                f"{e}\n原始音訊已保存於 {audio['name']}，可稍後執行：\n"
+                                f"原始音訊已保存於 {audio['name']}，可稍後執行：\n"
                                 f"uv run python app/chunked_spectrogram.py {recorder.rel_dir()}")
             else:
                 recorder.update(spectrogram={"status": "skipped", "reason": "音訊太短"})
@@ -1604,18 +1604,18 @@ class MonitorService:
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:
                         disconnected = True
-                        self.notify("warning", "警告", f"溫度感測器錯誤: {e}\n監測將繼續但不會讀取溫度數據",
+                        self.notify("warning", "警告", "溫度感測器錯誤，監測將繼續但不會讀取溫度數據",
                                     src="溫度")
                     log(None, "連接錯誤")
                     self.add_series_point("temp", None)
                     self.set_sensor("temp", text="連接錯誤", value=None,
                                     level="error" if disconnected else "warn",
-                                    reason=R_ERROR, detail=f"讀取溫度時發生例外：{e}")
+                                    reason=R_ERROR, detail="讀取溫度時發生錯誤：詳細內容見實驗 log")
                 stop_event.wait(1)
         except BaseException as e:  # noqa: BLE001  worker 意外死掉也要留下紀錄並關檔
             slog(ERROR, "溫度", f"溫度 worker 異常結束: {e}", e)
             recorder.add_error(f"溫度 worker 異常結束: {e}")
-            self.notify("error", "溫度監測中斷", f"溫度 worker 異常結束: {e}", src="溫度")
+            self.notify("error", "溫度監測中斷", "溫度監測意外中止，詳細內容見實驗 log", src="溫度")
         finally:
             recorder.close("temperature")
 
@@ -1682,16 +1682,16 @@ class MonitorService:
                         error_notified = True
                         recorder.add_error(f"音訊錄製錯誤: {audio_error}")
                         self.notify("warning", "警告",
-                                    f"音訊錄製出現錯誤: {audio_error}\n監測將繼續但音訊數據可能不完整", src="音訊")
+                                    "音訊錄製出現錯誤，監測將繼續但音訊數據可能不完整", src="音訊")
                     # 每次失敗都更新（累加 fail_count）；text/level 與原本相同
                     self.set_sensor("audio", text="錄製錯誤", level="warn", reason=R_ERROR,
-                                    detail=f"錄音過程發生錯誤：{audio_error}")
+                                    detail="錄音過程發生錯誤：詳細內容見實驗 log")
                     stop_event.wait(update_interval)
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "音訊", f"音訊監測錯誤: {e}", e)
             recorder.add_error(f"音訊監測錯誤: {e}")
-            self.notify("warning", "警告", f"音訊監測出現問題: {e}\n監測將繼續但不會有音訊數據", src="音訊")
-            reason, detail = init_diag or (R_ERROR, f"音訊初始化失敗：{e}")
+            self.notify("warning", "警告", "音訊監測出現問題，監測將繼續但不會有音訊數據", src="音訊")
+            reason, detail = init_diag or (R_ERROR, "音訊初始化失敗：詳細內容見實驗 log")
             self.set_sensor("audio", text="初始化失敗", level="error", reason=reason, detail=detail)
         finally:
             recorder.close("audio")  # 補寫 WAV header 並關檔
@@ -1818,7 +1818,7 @@ class MonitorService:
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:
                         disconnected = True
-                        self.notify("warning", "警告", f"測距儀錯誤: {e}\n監測將繼續但不會讀取距離數據", src="距離")
+                        self.notify("warning", "警告", "測距儀錯誤，監測將繼續但不會讀取距離數據", src="距離")
                     self.set_sensor("distance", text="連接錯誤", value=None,
                                     level="error" if disconnected else "warn",
                                     reason=R_ERROR, detail="通訊錯誤：USB 可能中斷")
@@ -1826,7 +1826,7 @@ class MonitorService:
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "距離", f"測距儀監測錯誤: {e}", e)
             recorder.add_error(f"測距儀監測錯誤: {e}")
-            self.notify("warning", "警告", f"測距儀監測出現問題: {e}\n監測將繼續但不會有距離數據", src="距離")
+            self.notify("warning", "警告", "測距儀監測出現問題，監測將繼續但不會有距離數據", src="距離")
             reason, detail = classify_rangefinder_error(e)
             self.set_sensor("distance", text="初始化失敗", value=None, level="error",
                             reason=reason, detail=detail)
@@ -1950,7 +1950,7 @@ class MonitorService:
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "光譜儀", f"光譜儀監測錯誤: {e}", e)
             recorder.add_error(f"光譜儀監測錯誤: {e}")
-            self.notify("warning", "警告", f"光譜儀監測出現問題: {e}\n監測將繼續但不會有光譜數據", src="光譜儀")
+            self.notify("warning", "警告", "光譜儀監測出現問題，監測將繼續但不會有光譜數據", src="光譜儀")
             reason, detail = classify_spectrometer_error(e)
             self.set_sensor("spectrometer", text="初始化失敗", value=None, level="error", reason=reason, detail=detail)
         finally:
