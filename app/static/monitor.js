@@ -837,7 +837,7 @@
   function setDot(el, level) { el.querySelector(".dot").dataset.level = level; }
 
   // ------------------------------------------------------------------
-  // 感測器狀態面板（左側欄）：燈號、失敗原因分類、排查建議、最後正常時間、連續失敗次數
+  // 感測器狀態卡（狀態卡片內）：燈號、失敗原因分類、排查建議、最後正常時間、連續失敗次數
   // 原因代碼與 app/web_monitor.py 的 R_* / REASON_LABELS 一致；列由 monitor.html 的 data-sensor 決定，
   // 伺服器 sensors 缺少該 key 時（尚未接入的感測器）顯示「未接入」。
   // ------------------------------------------------------------------
@@ -853,6 +853,8 @@
     driver: "error", not_found: "error", error: "error",
     idle: "neutral", init: "neutral", disabled: "neutral", stopped: "neutral",
   };
+  // 狀態卡底色：綠＝正常運行、紅＝錯誤／斷線（含讀取失敗等警告）、其餘（待機、未啟用、儲存中）一律橙
+  const CARD_LEVELS = { ok: "ok", warn: "error", error: "error" };
   let serverOffsetMs = 0; // 伺服器時間 - 本機時間，用 server_time 對時避免本機時鐘差
 
   function fmtAgo(sec) {
@@ -888,12 +890,14 @@
       const fails = row.querySelector(".sr-fails");
       if (!sensor) { // 尚未整合的感測器
         row.querySelector(".dot").dataset.level = "off";
+        row.dataset.level = "idle";
         badge.textContent = "未接入"; badge.dataset.tone = "neutral";
         detail.hidden = true; fails.hidden = true;
         return;
       }
       const reason = sensor.reason || "idle";
       row.querySelector(".dot").dataset.level = sensor.level;
+      row.dataset.level = CARD_LEVELS[sensor.level] || "idle";
       badge.textContent = REASON_LABELS[reason] || reason;
       badge.dataset.tone = REASON_TONES[reason] || "neutral";
       detail.textContent = sensor.detail || "";
@@ -944,11 +948,6 @@
 
     $("status-text").textContent = s.status_text;
     setDot($("card-status"), running ? "ok" : stopping ? "busy" : "idle");
-    setDot($("lamp-temp"), s.sensors.temp.level);
-    setDot($("lamp-audio"), s.sensors.audio.level);
-    setDot($("lamp-distance"), s.sensors.distance.level);
-    setDot($("lamp-spectrometer"), s.sensors.spectrometer.level);
-    $("audio-sub").textContent = `音訊：${s.sensors.audio.text}`;
     renderSensorPanel(s);
 
     $("btn-start").disabled = locked || busy;

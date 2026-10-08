@@ -26,7 +26,6 @@
       <form id="settings" autocomplete="off" novalidate>
         <section class="group">
           <h2>實驗標籤</h2>
-          <span class="field-hint">寫入 experiment_EXP_時間.json 的 experiment_labels。<b class="req">*</b> 為必填。</span>
           <div class="grid-2">
             <label class="field">
               <span class="field-label">金屬種類 <b class="req">*</b></span>
@@ -45,12 +44,8 @@
               <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
             </label>
             <label class="field span-2">
-              <span class="field-label">電源模式（選填）</span>
+              <span class="field-label">電源模式</span>
               <select id="label_power_mode" name="label_power_mode">
-                <option value="">未指定</option>
-                <option value="定電壓">定電壓</option>
-                <option value="定電流">定電流</option>
-                <option value="單極脈衝">單極脈衝</option>
                 <option value="雙極脈衝">雙極脈衝</option>
               </select>
             </label>
@@ -81,8 +76,8 @@
           </label>
         </section>
 
-        <section class="group">
-          <h2>音訊參數</h2>
+        <details class="group group-fold">
+          <summary><h2>音訊參數</h2></summary>
           <div class="grid-2">
             <label class="field">
               <span class="field-label">採樣率</span>
@@ -98,10 +93,10 @@
               <span class="field-hint">只影響畫面，不影響存檔；存檔一律保存全程</span>
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="group">
-          <h2>測距儀</h2>
+        <details class="group group-fold">
+          <summary><h2>測距儀</h2></summary>
           <div class="field">
             <div class="field-label-row">
               <label class="field-label" for="refl_mode">反射模式</label>
@@ -125,10 +120,10 @@
             <div class="input-unit"><input id="distance_interval" name="distance_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
             <span class="field-hint">程式讀取測距儀的頻率，0.1 秒＝每秒 10 筆，決定存檔資料密度</span>
           </label>
-        </section>
+        </details>
 
-        <section class="group">
-          <h2>光譜儀</h2>
+        <details class="group group-fold">
+          <summary><h2>光譜儀</h2></summary>
           <div class="grid-2">
             <div class="field">
               <div class="field-label-row">
@@ -148,38 +143,13 @@
               <div class="input-unit"><input id="spec_integration_ms" name="spec_integration_ms" inputmode="decimal" value="50"><span>ms</span></div>
             </label>
           </div>
-        </section>
+        </details>
       </form>
 
       <div class="controls">
         <button type="button" class="btn btn-start" id="btn-start">開始監測</button>
         <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止監測</button>
       </div>
-
-      <!-- 感測器狀態：每個感測器一列（key 對應 /api/state 的 sensors；伺服器沒有該 key 時顯示「未接入」） -->
-      <section class="group sensor-panel" id="sensor-panel" aria-label="感測器狀態">
-        <h2>感測器狀態</h2>
-        <div class="sensor-row" data-sensor="temp">
-          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">溫度</span><span class="sim-tag" data-sim="temp" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
-          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
-          <div class="sr-detail" hidden></div>
-        </div>
-        <div class="sensor-row" data-sensor="audio">
-          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">音訊</span><span class="sim-tag" data-sim="audio" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
-          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
-          <div class="sr-detail" hidden></div>
-        </div>
-        <div class="sensor-row" data-sensor="distance">
-          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">距離</span><span class="sim-tag" data-sim="distance" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
-          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
-          <div class="sr-detail" hidden></div>
-        </div>
-        <div class="sensor-row" data-sensor="spectrometer">
-          <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">光譜儀</span><span class="sim-tag" data-sim="spectrometer" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
-          <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
-          <div class="sr-detail" hidden></div>
-        </div>
-      </section>
     </aside>
 
     <!-- 右側：數值與圖表 -->
@@ -194,13 +164,30 @@
         <article class="stat stat-status" id="card-status">
           <header><span class="dot" data-level="idle"></span><h3>狀態</h3></header>
           <div class="status-text" id="status-text">待機中</div>
-          <ul class="lamps">
-            <li id="lamp-temp"><span class="dot" data-level="idle"></span>溫度</li>
-            <li id="lamp-audio"><span class="dot" data-level="idle"></span>音訊</li>
-            <li id="lamp-distance"><span class="dot" data-level="idle"></span>距離</li>
-            <li id="lamp-spectrometer"><span class="dot" data-level="idle"></span>光譜儀</li>
-          </ul>
-          <p class="stat-sub" id="audio-sub">音訊：--</p>
+          <!-- 感測器狀態：每個感測器一張卡（key 對應 /api/state 的 sensors；伺服器沒有該 key 時顯示「未接入」）。
+               卡片底色：綠＝正常運行、橙＝待機、紅＝錯誤／斷線 -->
+          <div class="sensor-cards" id="sensor-panel">
+            <div class="sensor-row" data-level="idle" data-sensor="temp">
+              <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">溫度</span><span class="sim-tag" data-sim="temp" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+              <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+              <div class="sr-detail" hidden></div>
+            </div>
+            <div class="sensor-row" data-level="idle" data-sensor="audio">
+              <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">音訊</span><span class="sim-tag" data-sim="audio" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+              <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+              <div class="sr-detail" hidden></div>
+            </div>
+            <div class="sensor-row" data-level="idle" data-sensor="distance">
+              <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">距離</span><span class="sim-tag" data-sim="distance" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+              <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+              <div class="sr-detail" hidden></div>
+            </div>
+            <div class="sensor-row" data-level="idle" data-sensor="spectrometer">
+              <div class="sr-head"><span class="dot" data-level="idle"></span><span class="sr-name">光譜儀</span><span class="sim-tag" data-sim="spectrometer" hidden>模擬</span><span class="sr-badge" data-tone="neutral">待機</span></div>
+              <div class="sr-meta" hidden><span class="sr-last" hidden></span><span class="sr-fails" hidden></span></div>
+              <div class="sr-detail" hidden></div>
+            </div>
+          </div>
         </article>
       </section>
 
