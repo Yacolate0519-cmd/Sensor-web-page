@@ -193,6 +193,7 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .last-result code { font-family: var(--mono); font-size: 11.5px; }
 
 .field-hint b { font-weight: 600; color: var(--text-2); }
+.field-label .req, .field-hint .req { color: var(--err); font-weight: 600; }
 
 /* ---------- 說明提示（問號圖示 + hover／focus tooltip，純 CSS） ---------- */
 .field-label-row { position: relative; display: flex; align-items: center; gap: 5px; }

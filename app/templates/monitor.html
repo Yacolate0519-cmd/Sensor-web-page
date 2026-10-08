@@ -25,6 +25,39 @@
     <aside class="sidebar" aria-label="設定">
       <form id="settings" autocomplete="off" novalidate>
         <section class="group">
+          <h2>實驗標籤</h2>
+          <span class="field-hint">寫入 experiment_EXP_時間.json 的 experiment_labels。<b class="req">*</b> 為必填。</span>
+          <div class="grid-2">
+            <label class="field">
+              <span class="field-label">金屬種類 <b class="req">*</b></span>
+              <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
+            </label>
+            <label class="field">
+              <span class="field-label">試片種類 <b class="req">*</b></span>
+              <input id="label_specimen" name="label_specimen" placeholder="例：20×20×3 mm 板材" spellcheck="false">
+            </label>
+            <label class="field span-2">
+              <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
+              <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
+            </label>
+            <label class="field span-2">
+              <span class="field-label">添加物（選填）</span>
+              <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
+            </label>
+            <label class="field span-2">
+              <span class="field-label">電源模式（選填）</span>
+              <select id="label_power_mode" name="label_power_mode">
+                <option value="">未指定</option>
+                <option value="定電壓">定電壓</option>
+                <option value="定電流">定電流</option>
+                <option value="單極脈衝">單極脈衝</option>
+                <option value="雙極脈衝">雙極脈衝</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="group">
           <h2>裝置</h2>
           <label class="field">
             <span class="field-label">溫度感測器 COM 端口</span>

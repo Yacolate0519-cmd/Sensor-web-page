@@ -6,6 +6,13 @@
   const PARAM_KEYS = ["com_port", "audio_device", "sample_rate",
     "update_interval", "history_duration", "refl_mode", "distance_interval",
     "spec_interval", "spec_integration_ms"];
+  // 實驗標籤：[表單 id, 名稱]，順序即確認對話框的列出順序
+  const LABEL_FIELDS = [
+    ["label_metal", "金屬種類"], ["label_specimen", "試片種類"],
+    ["label_electrolyte", "電解液配方與濃度"], ["label_additive", "添加物"],
+    ["label_power_mode", "電源模式"],
+  ];
+  PARAM_KEYS.push(...LABEL_FIELDS.map(([k]) => k));
   const AUDIO_PLACEHOLDERS = ["無可用音訊設備", "音訊設備檢測失敗"];
 
   let theme = readTheme();
@@ -1078,6 +1085,13 @@
         });
         if (!go) return;
       }
+      // 最後確認實驗標籤，避免沿用上一筆實驗的設定
+      const labelsOk = await dialog({
+        title: "確認實驗標籤", lead: "以下標籤會寫入這筆實驗的 json：",
+        items: LABEL_FIELDS.map(([k, label]) => `${label}：${String(params[k] || "").trim() || "（未填）"}`),
+        question: "標籤正確嗎？", okText: "開始監測", cancelText: "返回修改",
+      });
+      if (!labelsOk) return;
       const r = await api("/api/start", { method: "POST", body: { ...params, confirm: true } });
       if (!r.ok) {
         const msgs = (r.data && (r.data.errors || r.data.warnings)) || [`啟動監測失敗 (HTTP ${r.status})`];

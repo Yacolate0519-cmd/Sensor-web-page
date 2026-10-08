@@ -114,6 +114,17 @@ DEFAULT_PARAMS = {
     "spec_integration_ms": "50",
 }
 
+# 實驗標籤：開始監測前由使用者填寫，寫入 experiment_<id>.json 的 experiment_labels。
+# (表單 key, JSON key, 中文名稱, 必填)
+LABEL_FIELDS = [
+    ("label_metal", "metal", "金屬種類", True),
+    ("label_specimen", "specimen", "試片種類", True),
+    ("label_electrolyte", "electrolyte", "電解液配方與濃度", True),
+    ("label_additive", "additive", "添加物", False),
+    ("label_power_mode", "power_mode", "電源模式", False),
+]
+DEFAULT_PARAMS.update({form_key: "" for form_key, *_ in LABEL_FIELDS})
+
 REFL_MODE_LABELS = {0: "0-漫反射", 1: "1-鏡面反射"}
 STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTERM", "sigbreak": "Ctrl+Break",
                 "sighup": "關閉終端機視窗", "console_close": "關閉主控台視窗",
@@ -990,7 +1001,19 @@ class MonitorService:
             raise ValueError("參數輸入錯誤: 光譜儀量測間隔必須大於 0")
         if not 0 < parsed["spec_integration_ms"] <= 10000:
             raise ValueError("參數輸入錯誤: 光譜儀積分時間必須介於 0 與 10000 毫秒之間")
+        parsed["labels"] = self.validate_labels(raw)
         return parsed
+
+    @staticmethod
+    def validate_labels(raw):
+        """實驗標籤：必填欄位不可空白；選填欄位留空時存成 None。"""
+        labels = {}
+        for form_key, json_key, label, required in LABEL_FIELDS:
+            value = str(raw.get(form_key, "") or "").strip()
+            if not value and required:
+                raise ValueError(f"實驗標籤未填: {label}為必填")
+            labels[json_key] = value or None
+        return labels
 
     @staticmethod
     def disk_check():
@@ -1135,6 +1158,7 @@ class MonitorService:
                 "nfft": NFFT, "noverlap": NOVERLAP,
                 "spec_interval_s": p["spec_interval"], "spec_integration_ms": p["spec_integration_ms"],
             },
+            "experiment_labels": p["labels"],
             "enabled": dict(enabled),
             # 模擬資料絕不能被誤認為真實量測：這裡列出所有模擬來源
             "simulated": sorted(k for k in self.simulated if enabled.get(k)),
