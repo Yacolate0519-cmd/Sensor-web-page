@@ -8,13 +8,13 @@
     "spec_interval", "spec_integration_ms"];
   // 實驗標籤（在「輸入實驗標籤」視窗內填寫）：[表單 id, 名稱]，必填檢查與 app/web_monitor.py 的 LABEL_FIELDS 一致
   const LABEL_REQUIRED = [["label_metal", "金屬種類"], ["label_electrolyte", "電解液配方與濃度"]];
-  // 試片尺寸（mm）：形狀 → [表單 id, 名稱]；對應 web_monitor.py 的 SPECIMEN_SHAPES
+  // 試片尺寸（長度 mm、面積 mm²）：形狀 → [表單 id, 名稱]；對應 web_monitor.py 的 SPECIMEN_SHAPES
   const SPECIMEN_DIMS = {
     square: [["label_specimen_length", "長"], ["label_specimen_width", "寬"], ["label_specimen_thickness", "厚"]],
-    circle: [["label_specimen_radius", "半徑"], ["label_specimen_thickness", "厚度"]],
+    circle: [["label_specimen_area", "面積"], ["label_specimen_thickness", "厚度"]],
   };
   PARAM_KEYS.push("label_metal", "label_electrolyte", "label_additive",
-    "label_specimen_length", "label_specimen_width", "label_specimen_thickness", "label_specimen_radius");
+    "label_specimen_length", "label_specimen_width", "label_specimen_thickness", "label_specimen_area");
   const AUDIO_PLACEHOLDERS = ["無可用音訊設備", "音訊設備檢測失敗"];
 
   let theme = readTheme();
@@ -826,14 +826,12 @@
   }
   function writeForm(params) {
     PARAM_KEYS.forEach((k) => {
-      if (params[k] === undefined) return;
+      if (params[k] === undefined || k.startsWith("label_")) return; // 實驗標籤每次重填，不帶入上一筆
       const el = $(k);
       if (el.type === "checkbox") el.checked = params[k] === "1";
       else if (el.tagName === "SELECT") ensureOption(el, params[k]);
       else el.value = params[k];
     });
-    if (params.label_specimen_thickness !== undefined) $("label_specimen_thickness_c").value = params.label_specimen_thickness;
-    if (SPECIMEN_DIMS[params.label_specimen_shape]) setSpecimenShape(params.label_specimen_shape);
   }
 
   // ------------------------------------------------------------------
@@ -1084,14 +1082,14 @@
   function setSpecimenShape(shape) {
     document.querySelectorAll('input[name="label_specimen_shape"]').forEach((r) => { r.checked = r.value === shape; });
     document.querySelectorAll("#labels-form .dims").forEach((d) => { d.hidden = d.dataset.shape !== shape; });
-    $("specimen-hint").textContent = shape === "circle" ? "半徑、厚度，單位 mm" : "長 × 寬 × 厚，單位 mm";
+    $("specimen-hint").textContent = shape === "circle" ? "面積 mm²、厚度 mm" : "長 × 寬 × 厚，單位 mm";
   }
   function labelErrors() {
     const errs = LABEL_REQUIRED.filter(([k]) => !$(k).value.trim()).map(([, name]) => `${name}為必填`);
     SPECIMEN_DIMS[specimenShape()].forEach(([k, name]) => {
       const v = $(k).value.trim(), n = Number(v);
       if (!v) errs.push(`試片${name}為必填`);
-      else if (!(Number.isFinite(n) && n > 0)) errs.push(`試片${name}必須是大於 0 的數字（mm）`);
+      else if (!(Number.isFinite(n) && n > 0)) errs.push(`試片${name}必須是大於 0 的數字`);
     });
     return errs;
   }
@@ -1140,6 +1138,7 @@
         await showError(msgs);
         return;
       }
+      $("labels-form").reset(); setSpecimenShape("square"); // 下一筆實驗從空白開始
       setupCharts(r.data.state.audio_meta, r.data.state.run_id);
       renderState(r.data.state);
     } catch (e) {

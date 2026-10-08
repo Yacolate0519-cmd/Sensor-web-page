@@ -123,12 +123,12 @@ LABEL_FIELDS = [
 ]
 # 電源模式目前固定，不在介面顯示；之後要開放選擇再改回 LABEL_FIELDS
 POWER_MODE = "雙極脈衝"
-# 試片形狀 → (中文名稱, [(表單 key, JSON key, 中文名稱)])；尺寸一律 mm，必填且須 > 0
+# 試片形狀 → (中文名稱, [(表單 key, JSON key, 中文名稱)])；長度 mm、面積 mm²，必填且須 > 0
 SPECIMEN_SHAPES = {
     "square": ("正方形", [("label_specimen_length", "length_mm", "長"),
                           ("label_specimen_width", "width_mm", "寬"),
                           ("label_specimen_thickness", "thickness_mm", "厚")]),
-    "circle": ("圓形", [("label_specimen_radius", "radius_mm", "半徑"),
+    "circle": ("圓形", [("label_specimen_area", "area_mm2", "面積"),
                         ("label_specimen_thickness", "thickness_mm", "厚")]),
 }
 DEFAULT_PARAMS.update({form_key: "" for form_key, *_ in LABEL_FIELDS})
@@ -1057,9 +1057,9 @@ class MonitorService:
             try:
                 num = float(value)
             except ValueError:
-                raise ValueError(f"實驗標籤錯誤: 試片{label}必須是數字（mm）") from None
+                raise ValueError(f"實驗標籤錯誤: 試片{label}必須是數字") from None
             if not (math.isfinite(num) and num > 0):
-                raise ValueError(f"實驗標籤錯誤: 試片{label}必須大於 0 mm")
+                raise ValueError(f"實驗標籤錯誤: 試片{label}必須大於 0")
             specimen[json_key] = num
         return {"metal": labels.pop("metal"), "specimen": specimen, **labels, "power_mode": POWER_MODE}
 
