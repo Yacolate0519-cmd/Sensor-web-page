@@ -1,17 +1,19 @@
 # Sensor-web-page
 
 ## 專案簡介
-Sensor-web-page 是一套多感測器資料整合與即時監控平台，支援溫度感測器（RS485/Modbus）、音訊監測（麥克風）、AvaSpec 光譜儀、KEYENCE LK-G5000 雷射測距儀等多種裝置。提供 Tkinter 圖形化操作介面與 Flask SSE 網頁即時監控；量測資料一律以檔案形式存放，適用於實驗室、工業現場等多感測應用。
+Sensor-web-page 是一套多感測器資料整合與即時監控平台，支援溫度感測器（RS485/Modbus）、音訊監測（麥克風）、AvaSpec 光譜儀、KEYENCE LK-G5000 雷射測距儀等多種裝置。主要介面是 Flask＋SSE 的網頁版監控服務（`main.py` → `app/web_monitor.py`），監測在伺服器端執行、資料一律以檔案形式存放；早期的 Tkinter 介面與單一感測器腳本保留在 `legacy/`。
 
 ---
 
 ## 主要功能
-- **溫度感測**：即時讀取 RS485/Modbus 溫度感測器數據。
-- **音訊監測**：支援錄音、即時聲音熱圖（Spectrogram）顯示，並可儲存 CSV。
-- **光譜儀資料收集**：AvaSpec 光譜儀即時量測、繪圖與自動儲存。
-- **雷射測距儀**：KEYENCE LK-G5000 單次/連續量測、資料儲存與顯示。
-- **圖形化操作介面**：Tkinter 整合多感測器監控、參數設定、即時圖表。
-- **網頁即時監控**：Flask SSE 多圖表即時資料推送，支援多用戶瀏覽。
+- **溫度感測**：RS485/Modbus 溫度計，COM 埠自動偵測。
+- **音訊監測**：全程錄 WAV、即時頻譜圖（Spectrogram），停止後產生頻譜 CSV；預設選用 RØDE 麥克風。
+- **光譜儀**：AvaSpec-ULS2048L 即時光譜與時間熱圖，原始 counts 存 CSV。
+- **雷射測距儀**：KEYENCE LK-G5000 連續量測，以 µm 記錄。
+- **網頁即時監控**：Flask SSE 推送，多個瀏覽器可同時觀看；關掉或重新整理網頁不影響監測。
+- **實驗標籤**：開始前填寫金屬、試片尺寸、電解液等，寫入實驗 JSON。
+- **狀態監控與 log**：每個感測器有狀態卡顯示失敗原因，開始前預檢，異常與恢復會跳通知並寫進實驗 log。
+- **模擬模式**：沒有硬體也能跑完整流程。
 
 ---
 
@@ -27,8 +29,9 @@ Sensor-web-page/
 ├── logs/                      # 伺服器 log（server_YYYYMMDD.log，不進 git）
 ├── app/                       # 網頁版監控服務
 │   ├── web_monitor.py         #   Flask 伺服器與監測邏輯（main.py 呼叫它）
-│   ├── templates/             #   前端 HTML（monitor.html 等）
-│   ├── static/                #   前端 JS / CSS
+│   ├── templates/             #   前端 HTML（monitor.html；test.html、clock_test.html 給 legacy/main_web.py）
+│   ├── static/                #   前端 JS / CSS（monitor.js、monitor.css）
+│   ├── spectrometer_driver.py #   AvaSpec 驅動的延遲載入包裝
 │   ├── chunked_spectrogram.py #   由 WAV 分塊產生頻譜 CSV
 │   └── sim_devices.py         #   --simulate 模擬感測器
 ├── sensors/                   # 感測器驅動套件
@@ -160,6 +163,18 @@ uv run python main.py --port 5003  # 5002 被占用時改用其他埠
 uv run python main.py --help       # 所有參數
 ```
 （`main.py` 只是入口，實際程式在 `app/web_monitor.py`；`uv run python app/web_monitor.py` 效果相同。）
+
+| 參數／環境變數 | 預設 | 說明 |
+|---|---|---|
+| `--host` | `127.0.0.1` | 監聽位址 |
+| `--port` | `5002` | 監聽埠 |
+| `--simulate` | （空） | 以逗號分隔要模擬的感測器：`temp`、`distance`、`audio`、`spectrometer`、`all`，見「模擬模式」 |
+| `--simulate-faults` | 關 | 搭配 `--simulate`，定期模擬斷線／恢復 |
+| `SENSOR_AUDIO_PREFER` | `RØDE,RODE` | 預設麥克風的名稱關鍵字（逗號分隔、不分大小寫） |
+| `SENSOR_MONITOR_PORT` | `5002` | **只有一鍵啟動器讀取**；`main.py` 本身只看 `--port` |
+| `SENSOR_MONITOR_NO_BROWSER=1` | — | 一鍵啟動器不自動開瀏覽器 |
+
+一鍵啟動器（`start_monitor.bat`、`launchers/`）會把多餘的參數原樣轉給 `main.py`。
 - **一鍵啟動**：見上一節（Windows 的 `start_monitor.bat`、macOS 的 `Sensor Monitor.app`）。
 - 瀏覽器開啟 [http://127.0.0.1:5002](http://127.0.0.1:5002)。功能與 `legacy/main_csv.py` 相同（溫度、音訊頻譜圖、測距儀，並即時繪製溫度與距離曲線），介面改為網頁；**一律手動按「停止監測」才結束**。
 - 監測在伺服器端進行，關掉或重新整理網頁不會中斷；重新開啟頁面會自動復原目前畫面。
@@ -177,6 +192,49 @@ uv run python main.py --help       # 所有參數
 
 若 `avaspecx64.dll` 載入時報缺 `VCRUNTIME140.dll`／`MSVCP140.dll`，安裝 Microsoft Visual C++ 2015–2022 x64 執行階段（`vc_redist.x64.exe`）。各資料夾內的 `README.md` 有驅動版本與裝置 ID。
 
+#### 網頁介面與操作流程
+- **頂部**：連線狀態（連線中／已連線／重新連線中）；模擬模式時多一個「模擬模式」標籤。
+- **左側設定**（監測中或儲存中會鎖住）：
+  - 「裝置」：溫度計 COM 埠（留空＝自動偵測，旁邊有重新整理鈕列出可用埠）、音訊輸入裝置。
+  - 可收合的參數群組：
+    - 音訊參數：採樣率 22050 Hz、更新間隔 0.1 秒、頻譜圖顯示長度 100 秒。
+    - 測距儀：反射模式（0 漫反射／1 鏡面反射）、測距間隔 0.1 秒。
+    - 光譜儀：量測間隔 0.5 秒、積分時間 50 ms。
+  - 「輸入實驗標籤」開啟標籤視窗、「停止監測」（存檔期間顯示「儲存中…」）。監測沒有時間上限，一律手動停止。
+- **感測器狀態卡**（溫度／音訊／測距儀／光譜儀）：綠色＝正常、紅色＝警告或錯誤、橘色＝其他（待機、初始化、未啟用等）。卡片顯示原因分類（驅動／韌體問題、找不到裝置、Port 衝突、數據收不進來、接線／訊號異常、超出量程、未啟用、其他錯誤）、可行動的說明、「最後正常 N 秒前」與連續失敗次數。原始例外訊息不顯示在畫面上，請看實驗 log。
+- **圖表**：Spectrogram、Optical Spectrum（熱圖＋即時光譜）、溫度、距離；以 canvas 繪製、跟隨系統深淺色。
+- **開始流程**：填好實驗標籤並送出後進行預檢（偵測溫度計 COM 埠、選麥克風、試開測距儀與光譜儀、檢查參數與標籤、檢查磁碟空間）。預檢結果會先顯示在狀態卡上；有警告會跳確認視窗（「繼續監測」／「取消」），有錯誤則無法開始。至少要有一個感測器可用。找不到的感測器會被停用，不影響其他感測器。
+- **通知**：右側跳出 info／success／warning／error 通知（error 需手動關閉）。會通知的情況：感測器連續失敗 10 次判定斷線、恢復連線、音訊連續 3 秒全為 0、寫檔失敗、頻譜 CSV 產生失敗（附補產生指令）、監測完成摘要。所有通知同時寫進 log。
+- **麥克風預設**：音訊裝置清單中第一個名稱含 RØDE／RODE 的輸入裝置，找不到則用第一個輸入裝置（可用 `SENSOR_AUDIO_PREFER` 修改）。Windows 上被編碼弄亂的裝置名稱（如 `RÃ˜DE`）會自動修正顯示。
+- **重新整理／多視窗**：頁面載入或斷線重連時會向伺服器取回目前狀態、曲線與頻譜圖，畫面自動復原；實驗標籤不會保留，每次開始都要重新填寫。
+
+#### 實驗標籤
+在「輸入實驗標籤」視窗填寫，前端與伺服器都會檢查，存進 `experiment_<id>.json` 的 `experiment_labels`：
+
+| 欄位 | JSON key | 必填 | 說明 |
+|---|---|---|---|
+| 金屬種類 | `metal` | ✅ | 自由文字，例：AZ31 鎂合金 |
+| 試片 | `specimen` | ✅ | 正方形：`{"shape": "square", "length_mm", "width_mm", "thickness_mm"}`；圓形：`{"shape": "circle", "area_mm2", "thickness_mm"}`。尺寸皆須為 > 0 的數字 |
+| 電解液配方與濃度 | `electrolyte` | ✅ | 自由文字 |
+| 添加物 | `additive` | 選填 | 空白時存 `null` |
+| 電源模式 | `power_mode` | — | 固定為「雙極脈衝」，不在畫面上顯示 |
+
+#### Log
+- 伺服器 log：`logs/server_YYYYMMDD.log`；每場實驗另有 `experiment_<id>.log`。
+- 格式 `YYYY-mm-dd HH:MM:SS.mmm [LEVEL] 來源 訊息`。只在狀態改變時寫一行；持續失敗時每 60 秒寫一行摘要，恢復時記錄中斷時長與次數。
+
+#### HTTP API（前端使用，供除錯參考）
+| 方法 | 路徑 | 用途 |
+|---|---|---|
+| GET | `/` | 監控頁面 |
+| GET | `/api/devices?kind=all\|com\|audio` | 列出 COM 埠與音訊裝置 |
+| POST | `/api/preflight` | 預檢 |
+| POST | `/api/start` | 開始監測（有警告時需帶 `confirm`） |
+| POST | `/api/stop` | 停止監測 |
+| GET | `/api/state` | 目前完整狀態、曲線、近期通知 |
+| GET | `/api/spectrogram` | 頻譜圖資料（int16 二進位） |
+| GET | `/api/stream` | SSE 即時事件流 |
+
 #### 存檔內容（整場實驗完整保存）
 按下「開始監測」就建立 `Sensor_Data/EXP_YYYYmmdd_HHMMSS/`，資料**邊錄邊寫**（每筆都 flush，當機或斷電也只會少最後一瞬間）：
 
@@ -184,9 +242,9 @@ uv run python main.py --help       # 所有參數
 |---|---|---|
 | `audio_<id>.wav` | 全程原始音訊（16-bit，實際取樣率與聲道數） | 約 160 MB／小時（22050 Hz 單聲道；雙聲道加倍） |
 | `temperature_<id>.csv` | `Timestamp(ISO), Elapsed(s), Temperature(C), Status`；讀取失敗的列 Temperature 留空、Status 記錄原因 | 約 0.2 MB／小時 |
-| `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(µm), Relative(µm), Status`（以 µm 記錄、小數 3 位；Absolute = 50 mm 基準 + Relative）；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
+| `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(µm), Relative(µm), Status`（以 µm 記錄、小數 3 位；Absolute = 50 mm 基準 + Relative）；Elapsed 從測距儀第一筆讀值起算（溫度、光譜儀從實驗開始起算）；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
 | `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
-| `experiment_<id>.json` | 參數、實驗標籤（`experiment_labels`：金屬種類、試片、電解液配方與濃度必填，添加物選填，電源模式目前固定為「雙極脈衝」不需填寫；試片存成 `{"shape": "square", "length_mm", "width_mm", "thickness_mm"}` 或 `{"shape": "circle", "area_mm2", "thickness_mm"}`；按「輸入實驗標籤」於彈出視窗填寫）、啟用的感測器、裝置、開始／結束時間、停止原因、各檔案筆數與錯誤紀錄 | 數 KB |
+| `experiment_<id>.json` | 參數、實驗標籤（`experiment_labels`，見上節）、啟用的感測器、裝置、開始／結束時間、停止原因（手動停止、Ctrl+C、關閉終端機／主控台視窗、錯誤等）、各檔案筆數、頻譜 CSV 狀態與錯誤紀錄 | 數 KB |
 | `experiment_<id>.log` | 這次實驗的完整 log（開始參數、各感測器狀態變化與失敗原因、恢復、通知、停止與存檔摘要），每行即時寫入；伺服器層級的 log 另存在 `logs/server_YYYYMMDD.log` | 數十 KB |
 
 - 合計約 **460 MB／小時**，8 小時約 3.7 GB。預檢時若存檔磁碟剩餘空間 < 2 GB 會警告；錄製中寫檔失敗（例如磁碟滿）會跳通知並記錄在 json，監測不會靜默中斷。
@@ -204,7 +262,7 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 
 #### 光譜儀（AvaSpec-ULS2048L）
 - 網頁新增 **Optical Spectrum** 卡片：上方熱圖（x=時間、y=波長、顏色=counts，色階自動取近期 1%–99% 百分位），下方為最新一筆即時光譜（標示前 3 高峰；≥65000 counts 顯示飽和警告）。左側「光譜儀」區塊可設量測間隔（預設 0.5 秒）與積分時間（預設 50 ms）。
-- 存檔 `spectrometer_<id>.csv`：檔頭 `Timestamp,Elapsed(s),Status,` 後接 2048 個波長（nm），之後每筆一列原始 counts（未扣暗光）；失敗列強度留空、Status 為原因。約 100 MB／小時（預設設定）。波長範圍、積分時間等寫在 `experiment_<id>.json` 的 `spectrometer` 欄位。
+- 存檔 `spectrometer_<id>.csv`：Timestamp 為 ISO 格式；檔頭 `Timestamp,Elapsed(s),Status,` 後接 2048 個波長（nm），之後每筆一列原始 counts（未扣暗光）；失敗列強度留空、Status 為原因。約 100 MB／小時（預設設定）。波長範圍、積分時間等寫在 `experiment_<id>.json` 的 `spectrometer` 欄位。
 - 沒有硬體：用 `--simulate spectrometer`（或 `all`）。真實模式需要：Windows 64 位元、`drivers/avaspecx64.dll`（AvaSpec 官方驅動）、PyQt5（`uv sync --extra spectrometer`，驅動 import 時需要）、USB 接上光譜儀。缺任何一項時預檢會停用光譜儀並在狀態面板顯示原因，不影響其他感測器。
 
 #### 常見問題排除
@@ -212,7 +270,7 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 - **找不到 COM 埠**：確認 USB 轉 RS485 轉換器已接上並安裝驅動（常見晶片 CH340、FTDI、CP210x、PL2303），在「裝置管理員 → 連接埠 (COM 和 LPT)」確認出現 `COMx`；也可以在欄位直接輸入埠名。
 - **麥克風錄到全為 0／沒有音訊設備**：Windows「設定 → 隱私權與安全性 → 麥克風」開啟「麥克風存取」與「讓桌面應用程式存取麥克風」；確認輸入裝置沒被停用，並關閉占用麥克風的程式（Teams、Zoom）。macOS 則在「系統設定 → 隱私權與安全性 → 麥克風」允許終端機。
 - **LKIF2.dll 載入失敗／測距儀初始化失敗**：需要 64 位元 Python 搭配 64 位元 LKIF2.dll（專案附的版本），`CmnLib.dll`、`KeyUsbDrv.dll` 要一起放在 `drivers/`；安裝 KEYENCE 的 USB 驅動並確認裝置管理員中有控制器。macOS 無法使用測距儀。
-- **port 5002 被占用**：`uv run python main.py --port 5003`，或設定環境變數 `SENSOR_MONITOR_PORT`（一鍵啟動器會自動改用下一個可用的埠）。
+- **port 5002 被占用**：手動執行時用 `uv run python main.py --port 5003`；一鍵啟動器會自動改用下一個可用的埠，或用環境變數 `SENSOR_MONITOR_PORT` 指定起始埠。
 
 ### 舊版程式（legacy/）
 從專案根目錄執行（腳本開頭已設定好 `sensors/`、`app/` 的匯入路徑）：
@@ -222,8 +280,8 @@ uv run python legacy/temperture_main.py   # 單一溫度感測器
 uv run python legacy/sound_main.py        # 單一音訊（見「已知問題」）
 uv sync --extra spectrometer && uv run python legacy/spectrum_main.py   # 單一光譜儀，需選裝 PyQt5（輸出到 legacy/spectra_logs/）
 uv run python legacy/rangefinder_main.py  # 單一測距儀
-uv run python legacy/main_web.py          # 早期 Flask SSE 範例：http://localhost:5000/chart_test
-uv run python legacy/check_db.py          # 列出 MongoDB 最新一筆紀錄
+uv run python legacy/main_web.py          # 早期 Flask SSE 範例：http://localhost:5001/chart_test
+uv run --with pymongo python legacy/check_db.py   # 列出 MongoDB 最新一筆紀錄（pymongo 已不在專案相依套件中）
 ```
 
 ---
@@ -233,7 +291,7 @@ uv run python legacy/check_db.py          # 列出 MongoDB 最新一筆紀錄
 以下套件都在 `sensors/`。
 
 ### temp_py_package
-- 溫度感測器通訊協定、CRC、封包解析、連線與資料讀取（支援 Modbus RTU）。
+- 溫度感測器 Modbus RTU 通訊：CRC（`crc.py`）、封包組裝與解析（`frame.py`、`parser.py`）、COM 埠自動偵測（`port_finder.py`）、讀取與錯誤診斷（`reader.py`）。
 
 ### signal_package
 - 音訊錄音（`audio_recorder.py`）、訊號處理（`signal_processor.py`）、頻譜儲存（`audio_save.py`）、單機測試（`sound_main.py`）。
@@ -245,7 +303,7 @@ uv run python legacy/check_db.py          # 列出 MongoDB 最新一筆紀錄
 - KEYENCE LK-G5000 測距儀 DLL 介接、參數設定、資料讀取、錯誤處理。
 
 ### utils
-- 各類輔助函式與測試腳本。
+- 目前只有一個測試用的 `test.py`，沒有實際功能。
 
 ### app/templates、app/static
 - 網頁版前端（`monitor.html`、`monitor.js`、`monitor.css`）；`test.html`、`clock_test.html` 供 `legacy/main_web.py` 使用。
