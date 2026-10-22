@@ -110,6 +110,15 @@ class SimTemperature:
             return None, reason, detail
         return self._value(), "ok", ""
 
+    def read_tx600n(self, port=None):  # 簽名與 reader.read_tx600n_diag 相同
+        """TX-600N 版：T1 是模擬溫度，T2 模擬沒插探棒（Err，原始值與實機相同 0x4588）。"""
+        value, reason, detail = self.read_diag(port)
+        if value is None:
+            return None, reason, detail
+        raw1 = int(round(value * 10)) + 4000
+        return {"t1": (raw1 - 4000) / 10.0, "t2": 1380.0, "t1_err": False, "t2_err": True, "unit_f": False,
+                "tc_type": "K", "battery": 3, "raw": [raw1, 0x4588, 0x000B]}, "ok", ""
+
     def read(self, port=None):  # noqa: ARG002  簽名與 continuous_read 相同
         time.sleep(0.05)  # 模擬序列埠往返時間
         if self.clock.failing():

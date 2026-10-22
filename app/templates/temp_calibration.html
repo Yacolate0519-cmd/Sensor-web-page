@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>溫度計校正</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='2' fill='%234c8dff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='monitor.css') }}">
+  <style>
+    /* 校正頁專用：沿用 monitor.css 的色彩 token、輸入框與按鈕 */
+    .topbar a.chip { text-decoration: none; }
+    .topbar a.chip:hover { color: var(--text); border-color: var(--text-3); }
+    .safety { padding: 10px 20px; font-size: 13px; line-height: 1.5;
+      background: color-mix(in srgb, var(--warn) 14%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+    .safety b { color: var(--warn); }
+    .cal-main { padding: 16px 20px 24px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; min-width: 0; }
+    .card-title { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--text-3); }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .reading-row { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; }
+    .big { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 56px; font-weight: 600; line-height: 1.1; }
+    .big small { font-size: 22px; color: var(--text-2); margin-left: 4px; }
+    .big.bad { color: var(--err); }
+    .sub { color: var(--text-2); font-size: 12.5px; margin-top: 6px; }
+    .detail { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .stat { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; min-width: 0; }
+    .stat span { display: block; font-size: 11.5px; color: var(--text-3); }
+    .stat b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 18px; font-weight: 600; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; border: 1px solid var(--border-strong); color: var(--text-2); }
+    .badge[data-s="yes"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+      background: color-mix(in srgb, var(--ok) 12%, transparent); }
+    .badge[data-s="no"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+    .alarm { border-radius: var(--radius); padding: 12px 16px; font-weight: 600; font-size: 15px;
+      background: color-mix(in srgb, var(--err) 18%, var(--surface)); border: 2px solid var(--err); color: var(--err); }
+    .alarm[hidden] { display: none; }
+    .alarm small { display: block; font-weight: 400; font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+    .chart-wrap { position: relative; height: 300px; }
+    .chart-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-3); }
+    .legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 4px; }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: -4px 0 14px; overflow-x: auto; }
+    .tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer;
+      color: var(--text-2); font-weight: 600; white-space: nowrap; }
+    .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+    .panel[hidden] { display: none; }
+    .row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+    .row .field { width: 170px; }
+    .row .field.wide { width: 260px; }
+    .btn-sm { height: 34px; padding: 0 12px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+    th { color: var(--text-3); font-weight: 500; font-size: 12px; }
+    th:first-child, td:first-child { text-align: left; }
+    td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    td.txt { font-family: var(--font); text-align: left; white-space: normal; }
+    .table-scroll { overflow-x: auto; max-height: 360px; overflow-y: auto; }
+    .del { background: none; border: 0; color: var(--text-3); cursor: pointer; padding: 2px 6px; }
+    .del:hover { color: var(--err); }
+    .note { font-size: 13px; color: var(--text-2); margin-top: 10px; line-height: 1.6; }
+    .note code, .note b { font-family: var(--mono); color: var(--text); }
+    .empty { color: var(--text-3); font-size: 13px; padding: 8px 0; }
+    .msg { font-size: 12.5px; color: var(--err); min-height: 18px; white-space: pre-line; }
+    .step-box { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.7; }
+    .check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 10px 12px; margin-bottom: 12px;
+      border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--warn) 10%, transparent); }
+    .check input { width: 16px; height: 16px; margin-top: 2px; flex: none; }
+    .live { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .rec-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--err); margin-right: 6px;
+      animation: blink 1s steps(2) infinite; }
+    @keyframes blink { 50% { opacity: .2; } }
+    .sidebar .btn-ghost { width: 100%; }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+      .reading-row { grid-template-columns: 1fr; }
+      .cal-main, .safety { padding-left: 16px; padding-right: 16px; }
+      .big { font-size: 44px; }
+      .live { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .row .field, .row .field.wide { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>溫度計校正 · TX-600N</h1>
+    </div>
+    <div class="topbar-meta">
+      <span class="chip chip-sim" id="sim-chip" hidden title="溫度是模擬產生的，不是真實量測">模擬模式</span>
+      <span class="chip" id="device-chip" hidden></span>
+      <span class="chip"><span class="dot" id="status-dot" data-level="idle"></span><span id="status-text">待機</span></span>
+      <a class="chip" href="/">← 監測頁</a>
+    </div>
+  </header>
+
+  <div class="safety" role="note">
+    <b>⚠ 安全：</b>溫度計用線接到電腦時，熱縮套一旦漏電，PEO 的 600 V 會順著線進到電腦，接地也會讓雜訊變大。
+    目前用的原廠 TU-USB-W 線<b>沒有隔離</b>：在 USB／RS-232 線路加上隔離器之前，<b>PEO 通電時不准連線讀取</b>。
+    第一階段只做不通電的燒杯測試。
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar" aria-label="設定">
+      <section class="group">
+        <h2>裝置</h2>
+        <label class="field">
+          <span class="field-label">TX-600N COM 端口</span>
+          <div class="field-row">
+            <input id="com_port" list="com-list" placeholder="留空＝自動偵測" spellcheck="false">
+            <button type="button" class="btn-icon" id="refresh-com" title="重新整理 COM" aria-label="重新整理 COM">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          <datalist id="com-list"></datalist>
+          <span class="field-hint" id="com-hint">每 1 秒讀一次；溫度計要停在即時量測畫面</span>
+        </label>
+        <label class="field">
+          <span class="field-label">分析通道</span>
+          <select id="channel">
+            <option value="1">T1</option>
+            <option value="2">T2</option>
+          </select>
+        </label>
+        <div class="controls">
+          <button type="button" class="btn btn-start" id="btn-start">開始讀取</button>
+          <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止</button>
+        </div>
+        <div class="msg" id="msg" role="alert"></div>
+      </section>
+
+      <section class="group">
+        <h2>目前標籤</h2>
+        <label class="field">
+          <span class="field-label">杯子</span>
+          <select id="cup">
+            <option value="A">A 杯（室溫）</option>
+            <option value="B">B 杯（約 50°C）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">測棒狀態</span>
+          <select id="probe">
+            <option value="bare">裸測棒</option>
+            <option value="sleeved">套膜</option>
+          </select>
+        </label>
+        <span class="field-hint">之後每一筆讀值都會帶上這組標籤</span>
+      </section>
+
+      <section class="group">
+        <h2>穩定判定</h2>
+        <div class="grid-2">
+          <label class="field">
+            <span class="field-label">視窗</span>
+            <div class="input-unit"><input id="win" type="number" min="10" step="10" value="60"><span>秒</span></div>
+          </label>
+          <label class="field">
+            <span class="field-label">變化 ≤</span>
+            <div class="input-unit"><input id="th" type="number" min="0" step="0.01" value="0.10"><span>°C</span></div>
+          </label>
+          <label class="field span-2">
+            <span class="field-label">套膜最少浸泡</span>
+            <div class="input-unit"><input id="soak" type="number" min="0" step="1" value="5"><span>分鐘</span></div>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">圖表顯示長度</span>
+          <select id="chart-span">
+            <option value="300">5 分鐘</option>
+            <option value="600" selected>10 分鐘</option>
+            <option value="1800">30 分鐘</option>
+            <option value="0">全部</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="group">
+        <h2>匯出</h2>
+        <button type="button" class="btn btn-ghost btn-sm" id="export-raw">完整紀錄 CSV</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="export-summary">τ 與偏差摘要 CSV</button>
+        <span class="field-hint">標記存在這台電腦的瀏覽器；重新整理頁面會接回同一輪讀取</span>
+      </section>
+    </aside>
+
+    <main class="cal-main">
+      <div class="alarm" id="alarm" role="alert" hidden></div>
+
+      <div class="reading-row">
+        <section class="card">
+          <div class="card-head"><span class="card-title" id="cur-title">T1 目前溫度</span><span id="rec-flag" hidden><span class="rec-dot"></span>PEO 記錄中</span></div>
+          <div class="big" id="current">--<small>°C</small></div>
+          <div class="sub" id="other-ch">T2 --</div>
+          <div class="detail" id="last-time">尚未讀取</div>
+          <div class="detail" id="err-detail"></div>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title" id="stats-title">最近 60 秒</span>
+            <span class="badge" id="stable" data-s="none">資料不足</span>
+          </div>
+          <div class="stats">
+            <div class="stat"><span>平均</span><b id="s-mean">--</b></div>
+            <div class="stat"><span>標準差</span><b id="s-std">--</b></div>
+            <div class="stat"><span>最大−最小</span><b id="s-range">--</b></div>
+            <div class="stat"><span>升溫速度</span><b id="s-slope">--</b></div>
+            <div class="stat"><span>此標籤已浸泡</span><b id="s-soak">--</b></div>
+            <div class="stat"><span>有效／失敗</span><b id="s-n">--</b></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <span class="card-title">溫度曲線</span>
+          <div class="legend">
+            <span><i style="border-color:var(--chart-wave)"></i>讀值</span>
+            <span id="lg-corr" hidden><i style="border-color:var(--warn);border-top-style:dashed"></i>修正值</span>
+            <span><i style="border-color:var(--ok);border-top-style:dashed"></i>參考／63.2% 目標</span>
+            <span><i style="border-color:var(--text-3);border-top-style:dotted"></i>事件</span>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="chart"></canvas></div>
+      </section>
+
+      <section class="card">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="A" aria-selected="true">A 穩定偏差</button>
+          <button class="tab" role="tab" data-tab="B" aria-selected="false">B 反應速度 τ</button>
+          <button class="tab" role="tab" data-tab="C" aria-selected="false">C PEO 實驗記錄</button>
+        </div>
+
+        <!-- A：穩定時的偏差 -->
+        <div class="panel" data-panel="A">
+          <div class="row">
+            <label class="field">
+              <span class="field-label">玻璃溫度計讀數</span>
+              <div class="input-unit"><input id="glass-a" type="number" step="0.1" placeholder="例：25.0"><span>°C</span></div>
+            </label>
+            <button type="button" class="btn btn-start btn-sm" id="add-dev">記錄這一點</button>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>時間</th><th>杯</th><th>測棒</th><th>玻璃</th><th>TX 平均</th><th>標準差</th><th>穩定</th><th>TX−玻璃</th><th>套膜偏差</th><th></th></tr></thead>
+              <tbody id="dev-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="dev-empty">標籤設好、讀值穩定後，輸入玻璃溫度計讀數再按「記錄這一點」，系統會用目前統計視窗的平均值記錄。</div>
+          <div class="note" id="dev-summary"></div>
+          <div class="note">套膜偏差 = TX 讀數 −（玻璃讀數 + 同一杯裸測棒的 TX−玻璃 平均）。每杯要先量裸測棒，才算得出套膜偏差。</div>
+        </div>
+
+        <!-- B：反應速度 τ -->
+        <div class="panel" data-panel="B" hidden>
+          <div class="step-box" id="step-box"></div>
+          <div class="row" id="step-controls">
+            <button type="button" class="btn btn-start btn-sm" id="step-start">開始階躍（移杯的那一刻按）</button>
+            <label class="field">
+              <span class="field-label">終點：新杯的玻璃讀數（可留空）</span>
+              <div class="input-unit"><input id="glass-b" type="number" step="0.1" placeholder="留空＝用穩定值"><span>°C</span></div>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm" id="step-finish" disabled>完成並計算 τ</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="step-cancel" disabled>取消這次</button>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>#</th><th>方向</th><th>測棒</th><th>開始時間</th><th>起始</th><th>終點</th><th>終點來源</th><th>63.2% 目標</th><th>τ (秒)</th><th></th></tr></thead>
+              <tbody id="tau-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="tau-empty">測棒在起始杯穩定後，移到另一杯的那一刻按「開始階躍」。杯子標籤會自動切換到新杯。升溫、降溫各做 3 次。</div>
+          <div class="note" id="tau-summary"></div>
+        </div>
+
+        <!-- C：PEO 實驗記錄 -->
+        <div class="panel" data-panel="C" hidden>
+          <label class="check">
+            <input type="checkbox" id="safety-ok">
+            <span><b>已確認隔離／目前為不通電測試</b><br>
+              USB／RS-232 線路上已經裝好隔離器，或這次 PEO 電源不會通電。沒有勾選就不能開始 PEO 記錄。</span>
+          </label>
+          <div class="row">
+            <button type="button" class="btn btn-start btn-sm" id="peo-start" disabled>開始 PEO 記錄</button>
+            <button type="button" class="btn btn-stop btn-sm" id="peo-stop" disabled>結束 PEO 記錄</button>
+          </div>
+          <div class="live">
+            <div class="stat"><span>使用的 τ</span><b id="c-tau">--</b></div>
+            <div class="stat"><span>升溫速度（平滑後）</span><b id="c-slope">--</b></div>
+            <div class="stat"><span>估計落後量</span><b id="c-lag">--</b></div>
+            <div class="stat"><span>修正讀值</span><b id="c-corr">--</b></div>
+          </div>
+          <div class="row">
+            <label class="field">
+              <span class="field-label">τ（秒，預設為 B 的平均）</span>
+              <input id="tau-use" type="number" min="0" step="1" placeholder="尚未量測">
+            </label>
+            <label class="field">
+              <span class="field-label">dT/dt 平滑（線性回歸）</span>
+              <select id="slope-win">
+                <option value="30">30 秒</option>
+                <option value="45">45 秒</option>
+                <option value="60" selected>60 秒</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">修正讀值</span>
+              <select id="corr-on">
+                <option value="1" selected>顯示並匯出</option>
+                <option value="0">不使用</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <button type="button" class="btn btn-ghost btn-sm" data-event="通電" disabled>通電</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-event="斷電" disabled>斷電</button>
+            <label class="field">
+              <span class="field-label">調電壓</span>
+              <input id="volt" placeholder="例：450 V" disabled>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm" data-event="調電壓" disabled>記錄調電壓</button>
+            <label class="field wide">
+              <span class="field-label">備註</span>
+              <input id="note-text" placeholder="例：冷卻水開大" disabled>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm" data-event="備註" disabled>加備註</button>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>時間</th><th>經過</th><th>事件</th><th>當時讀值</th></tr></thead>
+              <tbody id="event-body"></tbody>
+            </table>
+          </div>
+          <div class="note">修正讀值 = 讀值 + τ × dT/dt（dT/dt 取最近一段時間的線性回歸斜率）；估計落後量 = 目前升溫速度 × τ。
+            原始讀值和修正讀值都會匯出。讀值 Err 或 1 秒內跳超過 2°C 時，頁面頂端會出現紅色警告，CSV 的 Flags 欄也會記錄。</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='temp_calibration.js') }}"></script>
+</body>
+</html>

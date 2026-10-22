@@ -148,3 +148,65 @@ def read_temperature_diag(port, baudrate=57600):
     if raw_value is None:
         return None, "wiring", "回應不完整或格式/CRC 錯誤：A/B 線可能接反、接觸不良或受干擾"
     return convert_raw_to_temperature(raw_value), "ok", ""
+
+
+# ---------------------------------------------------------------------------
+# RiXEN TX-600N：一次讀 0000h~0006h（T1、T2、警報設定、狀態），校正頁使用
+# 說明書 p.11-13：0000h T1 即時值、0001h T2 即時值（(Data-4000)/10），0006h 狀態：
+#   Hi byte = 熱電偶類型（0=K），Lo byte bit5 = °F，bit3 = T2-Error，bit2 = T1-Error，bit1~0 = 電量
+# Err（例如探棒沒插）時溫度暫存器仍會回一個假值（實測 T2 沒插回 0x4588 → 1380.0），只能看狀態位元判斷。
+# ---------------------------------------------------------------------------
+TX600N_WORDS = 7
+TX600N_TC_TYPES = ("K", "J", "E", "T", "B", "R", "N", "S", "C")
+
+
+def read_tx600n_diag(port, baudrate=57600, slave_addr=0x03):
+    """
+    :return: (data 或 None, reason, detail)。data = {"t1", "t2", "t1_err", "t2_err", "unit_f", "tc_type",
+             "battery"(0~3), "raw": [T1 原始值, T2 原始值, 狀態字]}；t1/t2 是依公式換算的值，Err 時不可信
+    """
+    if not port:
+        return None, "disabled", "未選擇 COM 埠"
+
+    missing = check_port_present(port)
+    if missing:
+        return (None, *missing)
+
+    try:
+        ser = serial.Serial(port, baudrate, bytesize=8, parity='N', stopbits=1, timeout=1)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if any(h in msg.lower() for h in _BUSY_HINTS):
+            return None, "busy", f"{port} 被其他程式佔用或無權限：關閉其他使用此 COM 埠的程式後重試（{msg}）"
+        return None, "error", f"無法開啟 {port}：{msg}"
+
+    expected = 3 + 2 * TX600N_WORDS + 2
+    try:
+        ser.reset_input_buffer()
+        ser.write(build_request_frame(slave_addr, 0x0000, TX600N_WORDS))
+        response = ser.read(expected)
+    except Exception as e:  # noqa: BLE001
+        return None, "error", f"讀寫 {port} 時發生錯誤：{e}"
+    finally:
+        ser.close()
+
+    if len(response) == 0:
+        return None, "no_data", "埠已開啟但溫度計無回應：確認 TX-600N 已開機、停在即時量測畫面、USB 線已接好"
+    crc = calculate_crc(response[:-2])
+    if (len(response) != expected or response[0] != slave_addr or response[1] != 0x03
+            or response[2] != 2 * TX600N_WORDS or response[-2] != (crc & 0xFF) or response[-1] != (crc >> 8)):
+        return None, "wiring", "回應不完整或 CRC 錯誤：傳輸線接觸不良或受干擾"
+    words = [(response[3 + 2 * i] << 8) | response[4 + 2 * i] for i in range(TX600N_WORDS)]
+    status = words[6]
+    lo = status & 0xFF
+    tc = status >> 8
+    return {
+        "t1": convert_raw_to_temperature(words[0]),
+        "t2": convert_raw_to_temperature(words[1]),
+        "t1_err": bool(lo & 0x04),
+        "t2_err": bool(lo & 0x08),
+        "unit_f": bool(lo & 0x20),
+        "tc_type": TX600N_TC_TYPES[tc] if tc < len(TX600N_TC_TYPES) else f"?{tc}",
+        "battery": lo & 0x03,
+        "raw": [words[0], words[1], status],
+    }, "ok", ""
