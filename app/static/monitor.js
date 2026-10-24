@@ -971,7 +971,8 @@
 
 
     // 模擬模式標示
-    const sim = s.simulated || [];
+    // 電源介面暫不顯示，模擬標示也不列出電源
+    const sim = (s.simulated || []).filter((k) => k !== "psu" || !$("psu-panel").hidden);
     const simNames = { temp: "溫度", distance: "距離", audio: "音訊", spectrometer: "光譜儀", psu: "電源" };
     const chip = $("sim-chip");
     chip.hidden = !sim.length;

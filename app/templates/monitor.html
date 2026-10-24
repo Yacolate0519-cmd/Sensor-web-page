@@ -166,7 +166,8 @@
       </section>
 
       <!-- 電源供應器（TRUMPF TruPlasma Bipolar 4010）：獨立於實驗的開始／停止，由使用者明確連線；控制只准本機 -->
-      <section class="psu" id="psu-panel" aria-label="電源 TruPlasma">
+      <!-- 電源控制介面暫不顯示：等老師確認電源要怎麼控制再決定（2026-10-24）。後端與驅動保留 -->
+      <section class="psu" id="psu-panel" aria-label="電源 TruPlasma" hidden>
         <header class="psu-head">
           <h2>電源 TruPlasma <span class="sim-tag" data-sim="psu" hidden>模擬</span></h2>
           <span class="sr-badge" id="psu-phase" data-tone="neutral">未連線</span>
@@ -232,29 +233,29 @@
 
       <section class="charts" aria-label="圖表">
         <figure class="chart chart-spec">
-          <figcaption><h3>Spectrogram <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
+          <figcaption><h3>Spectrogram（聲音頻譜圖） <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
           <div class="canvas-wrap canvas-spec"><canvas id="cv-spec"></canvas></div>
         </figure>
         <!-- 光譜儀：上為光譜熱圖（時間 × 波長），下為最新一筆的即時光譜；放在 Spectrogram 之後，兩者同為「時間-頻率/波長」熱圖 -->
         <figure class="chart chart-spec">
-          <figcaption><h3>Optical Spectrum <span class="sim-tag" data-sim="spectrometer" hidden>模擬</span></h3><span class="chart-note" id="opt-note">AvaSpec-ULS2048L</span></figcaption>
+          <figcaption><h3>Optical Spectrum（光譜） <span class="sim-tag" data-sim="spectrometer" hidden>模擬</span></h3><span class="chart-note" id="opt-note">AvaSpec-ULS2048L</span></figcaption>
           <div class="canvas-wrap canvas-opt"><canvas id="cv-opt"></canvas></div>
           <div class="canvas-wrap canvas-opt-live"><canvas id="cv-opt-live"></canvas></div>
         </figure>
         <figure class="chart">
-          <figcaption><h3>Temperature <span class="sim-tag" data-sim="temp" hidden>模擬</span></h3><span class="chart-note" id="temp-note">--</span></figcaption>
+          <figcaption><h3>Temperature（溫度） <span class="sim-tag" data-sim="temp" hidden>模擬</span></h3><span class="chart-note" id="temp-note">--</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-temp"></canvas></div>
         </figure>
         <figure class="chart">
-          <figcaption><h3>Distance <span class="sim-tag" data-sim="distance" hidden>模擬</span></h3><span class="chart-note" id="dist-note">--</span></figcaption>
+          <figcaption><h3>Distance（距離） <span class="sim-tag" data-sim="distance" hidden>模擬</span></h3><span class="chart-note" id="dist-note">--</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-dist"></canvas></div>
         </figure>
-        <figure class="chart">
-          <figcaption><h3>PSU Voltage <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
+        <figure class="chart chart-psu" hidden>
+          <figcaption><h3>PSU Voltage（電源電壓） <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-psu-u"></canvas></div>
         </figure>
-        <figure class="chart">
-          <figcaption><h3>PSU Current (peak) <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
+        <figure class="chart chart-psu" hidden>
+          <figcaption><h3>PSU Current (peak)（電源電流峰值） <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-psu-i"></canvas></div>
         </figure>
       </section>

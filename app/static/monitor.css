@@ -294,12 +294,14 @@ input[aria-invalid="true"] { border-color: var(--err); }
   margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 10px 12px 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
 }
-.chart-spec { grid-column: 1 / -1; }
+.psu[hidden], .chart[hidden] { display: none; }
 .chart figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.chart h3 { font-size: 13px; font-weight: 600; }
+.chart h3 { font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .chart-note { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .canvas-wrap { position: relative; width: 100%; height: 240px; }
 .canvas-spec { height: clamp(300px, 42vh, 460px); }
+/* Spectrogram 與 Optical Spectrum 並排：Spectrogram 拉高到跟右邊（光譜熱圖＋即時光譜）一樣高 */
+.chart-spec .canvas-spec { flex: 1 1 auto; }
 .canvas-opt { height: clamp(240px, 34vh, 360px); }
 .canvas-opt-live { height: 210px; }
 .canvas-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
