@@ -360,11 +360,79 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .dims-x { color: var(--text-3); flex: none; }
 .labels-error { color: var(--err) !important; font-size: 13px; }
 
+/* ---------- 電源 TruPlasma 面板 ---------- */
+.psu {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+}
+.psu[data-live="1"] { border-color: var(--err); box-shadow: 0 0 0 1px color-mix(in srgb, var(--err) 50%, transparent); }
+.psu-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.psu-head h2 { font-size: 14px; }
+.psu-head .sr-badge { margin-left: 0; }
+.psu-meta { font-size: 12px; color: var(--text-3); font-family: var(--mono); }
+.psu-conn { display: flex; gap: 6px; margin-left: auto; }
+.psu-conn input { width: 90px; font-family: var(--mono); }
+.btn-sm { height: 34px; padding: 0 12px; font-size: 13px; }
+.psu-note { margin: 0; font-size: 12.5px; color: var(--warn); }
+.psu-note[hidden], .psu-banner[hidden] { display: none; }
+.psu-banner {
+  padding: 10px 14px; border-radius: var(--radius-sm); font-size: 15px; font-weight: 700;
+  color: #fff; background: var(--err);
+}
+.psu-banner[data-level="warning"] { background: var(--warn); color: #1a1400; }
+.psu-flags { display: flex; flex-wrap: wrap; gap: 6px; }
+.psu-flag {
+  padding: 2px 10px; border-radius: 999px; font-size: 12px; color: var(--text-3);
+  border: 1px solid var(--border-strong);
+}
+.psu-flag[data-on="1"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.psu-flag[data-bad][data-on="1"], .psu-flag[data-live][data-on="1"] { color: var(--err); border-color: color-mix(in srgb, var(--err) 55%, transparent); background: color-mix(in srgb, var(--err) 14%, transparent); }
+.psu-readings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.psu-read {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 6px; padding: 8px 12px; min-width: 0;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.psu-label { flex-basis: 100%; font-size: 12px; color: var(--text-2); }
+.psu-big { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 30px; font-weight: 500; line-height: 1.2; }
+.psu-mid { font-family: var(--mono); font-size: 15px; font-weight: 600; }
+.psu-set { flex-basis: 100%; font-size: 12px; color: var(--text-3); font-family: var(--mono); }
+.psu-read-text { align-content: center; }
+.psu-arc { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; align-items: start; }
+.psu-arcbox { display: flex; flex-direction: column; gap: 2px; }
+.psu-meas { border-collapse: collapse; font-size: 12px; width: 100%; }
+.psu-meas tbody { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0 16px; }
+.psu-meas tr { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding: 2px 0; }
+.psu-meas td:first-child { color: var(--text-3); }
+.psu-meas td:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.psu-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 24px; }
+.psu-sp { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; }
+.psu-sp .field { width: 120px; }
+.psu-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.btn-estop {
+  height: 52px; padding: 0 28px; border-radius: var(--radius-sm); border: 2px solid var(--danger);
+  background: var(--danger); color: #fff; font-size: 17px; font-weight: 700; letter-spacing: .08em; cursor: pointer;
+}
+.btn-estop:disabled { opacity: .35; cursor: not-allowed; }
+.btn-estop:not(:disabled):hover { filter: brightness(1.1); }
+.psu-params > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-2); user-select: none; }
+.psu-params-bar { margin: 8px 0; }
+.psu-params h4 { margin: 14px 0 4px; font-size: 12px; letter-spacing: .06em; color: var(--text-3); }
+.psu-param {
+  display: grid; grid-template-columns: minmax(160px, 1.4fr) minmax(90px, .8fr) minmax(190px, 1.2fr);
+  gap: 4px 12px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.psu-param-val { font-family: var(--mono); }
+.psu-param-edit { display: flex; gap: 6px; }
+.psu-param-edit input, .psu-param-edit select { height: 30px; }
+.psu-param-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-3); }
+
 /* ---------- 響應式 ---------- */
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
   .charts { grid-template-columns: minmax(0, 1fr); }
+  .psu-readings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .psu-arc, .psu-param { grid-template-columns: minmax(0, 1fr); }
   .content { padding: 12px 16px 24px; }
   .topbar { padding: 0 16px; }
 }

@@ -168,7 +168,7 @@ uv run python main.py --help       # 所有參數
 |---|---|---|
 | `--host` | `127.0.0.1` | 監聽位址 |
 | `--port` | `5002` | 監聽埠 |
-| `--simulate` | （空） | 以逗號分隔要模擬的感測器：`temp`、`distance`、`audio`、`spectrometer`、`all`，見「模擬模式」 |
+| `--simulate` | （空） | 以逗號分隔要模擬的感測器：`temp`、`distance`、`audio`、`spectrometer`、`psu`、`all`，見「模擬模式」 |
 | `--simulate-faults` | 關 | 搭配 `--simulate`，定期模擬斷線／恢復 |
 | `SENSOR_AUDIO_PREFER` | `RØDE,RODE` | 預設麥克風的名稱關鍵字（逗號分隔、不分大小寫） |
 | `SENSOR_MONITOR_PORT` | `5002` | **只有一鍵啟動器讀取**；`main.py` 本身只看 `--port` |
@@ -264,6 +264,29 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 - 網頁新增 **Optical Spectrum** 卡片：上方熱圖（x=時間、y=波長、顏色=counts，色階自動取近期 1%–99% 百分位），下方為最新一筆即時光譜（標示前 3 高峰；≥65000 counts 顯示飽和警告）。左側「光譜儀」區塊可設量測間隔（預設 0.5 秒）與積分時間（預設 50 ms）。
 - 存檔 `spectrometer_<id>.csv`：Timestamp 為 ISO 格式；檔頭 `Timestamp,Elapsed(s),Status,` 後接 2048 個波長（nm），之後每筆一列原始 counts（未扣暗光）；失敗列強度留空、Status 為原因。約 100 MB／小時（預設設定）。波長範圍、積分時間等寫在 `experiment_<id>.json` 的 `spectrometer` 欄位。
 - 沒有硬體：用 `--simulate spectrometer`（或 `all`）。真實模式需要：Windows 64 位元、`drivers/avaspecx64.dll`（AvaSpec 官方驅動）、PyQt5（`uv sync --extra spectrometer`，驅動 import 時需要）、USB 接上光譜儀。缺任何一項時預檢會停用光譜儀並在狀態面板顯示原因，不影響其他感測器。
+
+#### 電源供應器（TRUMPF TruPlasma Bipolar 4010）
+網頁的「電源 TruPlasma」面板可以設定電壓／電流／功率、開關輸出、讀寫電源參數，並把電壓、電流、功率記進實驗資料夾。電源**獨立於實驗的開始／停止**：只有按「連線」才會連，伺服器啟動時不會自動連線；停止實驗不會動輸出。
+
+**使用方式**
+1. 在接電源的電腦（實驗室收資料電腦，電源接在 COM8）上開網頁，COM 欄位填 `COM8`（預設）按「連線」；沒有電源時用 `--simulate psu`（或 `all`）練習。
+2. 輸入 U／I／P 設定值（上限 1000 V／25 A／10 kW）按「套用設定值」，再按「開啟輸出」，確認視窗列出設定值後才會開。輸入框改了卻沒套用時不會開輸出。
+3. 「關閉輸出」正常關機；「緊急關閉」立刻要求關閉輸出（連線中隨時可按）。
+4. 「電源參數」展開後按「讀取參數」，每列有「寫入」，會先確認「舊值 → 新值」。
+
+**安全行為**
+- 程式每 0.5 秒送一次心跳；程式或連線中斷超過 4–5 秒，電源自己會報 61613 並關閉輸出。
+- 斷線、伺服器關閉（含 Ctrl+C／關視窗）會先關輸出再放掉 COM 埠；警報、Interlock、連續 3 次沒回應都會自動關輸出，且不會自動重開，必須人工重新開啟。
+- 開啟順序：Ready、無警報、無 Interlock → 接通主繼電器 → 等 3 秒以上 → Power ON。
+- 控制只准伺服器本機（`127.0.0.1`／`::1`）；從其他電腦開網頁只能看，面板會停用所有控制鈕，但「緊急關閉」仍可按。
+- 除了 U／I／P，其他參數會寫入電源的 EEPROM，只能在輸出關閉時寫，寫完會讀回比對；通訊相關設定（介面、鮑率、位址、逾時等）只顯示、不開放寫入。
+- 電源使用中，溫度計 COM 自動偵測會略過電源的埠。
+
+**CSV**：實驗錄製中且電源已連線時，資料夾內會有 `truplasma_<id>.csv`（UTF-8 BOM，每 0.5 秒一列；實驗中途才連線則從連線那刻開始）。欄位：`Timestamp, Elapsed(s), Phase, Uset_V, Iset_A, Pset_kW, Uact_V, Iact_peak_A, Pact_kW`，接著是 `Uavg_A_V, Iavg_A_A, Pavg_A_kW, Uavg_B_V, Iavg_B_A, Pavg_B_kW, Freq_Hz, Duty_pct, T_OutputCores_C`，最後是 `RelaysOn, PowerOn, Interlock, AlarmActive, WarningActive, AlarmCode, Mode, Regulation, ArcRate_per_s, ArcCnt_Imax, ArcCnt_UxI, ArcCnt_dU, ArcCnt_Usag, ArcCnt_ArcBurst, Bits0, Bits1, Bits2, Bits3`（布林為 0／1；讀不到的量測值留空）。網頁另有 PSU Voltage、PSU Current (peak) 兩張曲線。
+
+**注意**
+- COM8 同時只能一個程式使用：PVDPower／LabVIEW 開著時本程式連不上，反過來也一樣，請擇一。
+- **尚未用真實電源測試**：目前只在模擬器（`--simulate psu`）驗證；第一次接真機請先用低設定值（例如 50 V／1 A／0.1 kW）並有人在旁邊。
 
 #### 常見問題排除
 - **溫度計 COM 埠（預設自動偵測）**：COM 欄位留空（或填 `auto`），按開始時會逐一探測 USB 轉序列埠，回應的站號、功能碼與 CRC 都正確的那個就是溫度計，log 會記「自動偵測：溫度計在 COMx」。只探測 USB 轉接器，不碰主機板內建 COM。COM 號碼會隨 USB 孔改變（尤其沒有序號的 PL2303），所以不必記住號碼；也可以在欄位手動輸入埠名。

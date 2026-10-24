@@ -96,14 +96,16 @@ def probe_temperature_port(port, baudrate=57600, slave_addr=0x03, timeout=1):
     return convert_raw_to_temperature(parse_response(response))
 
 
-def find_temperature_port(baudrate=57600):
+def find_temperature_port(baudrate=57600, skip=()):
     """
     逐一探測 USB 轉序列埠（有 VID 者；不碰主機板內建 COM），回傳 (找到的埠或 None, 已探測的埠清單)。
     COM 號碼會隨 USB 孔改變（例如沒有序號的 Prolific），所以每次開始前重新找。
+    skip：不要探測的埠名（例如電源供應器正在使用的 COM 埠），比對不分大小寫。
     """
     tried = []
+    skip = {s.upper() for s in skip}
     for p in list_candidate_ports():
-        if p.vid is None:
+        if p.vid is None or p.device.upper() in skip:
             continue
         tried.append(p.device)
         if probe_temperature_port(p.device, baudrate) is not None:

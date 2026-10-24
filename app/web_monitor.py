@@ -66,6 +66,8 @@ import spectrometer_driver  # 只定義包裝類別；真正的驅動延遲到�
 from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import list_candidate_ports  # noqa: E402
 from temp_py_package.reader import check_port_present, find_temperature_port, read_tx600n_diag
+from truplasma_package import MEASUREMENTS, PARAMS, SimTruPlasma, TruPlasmaController, open_serial  # noqa: E402
+from truplasma_package.protocol import PULSE_MODES  # noqa: E402
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
@@ -165,6 +167,16 @@ REASON_LABELS = {
 # 並在 self.sensors / _reset_sensor_display 加同名 key；前端狀態面板的 sensors 缺少該 key 時會顯示「未接入」。
 SENSOR_NAMES = {"temp": "溫度", "audio": "音訊", "distance": "距離", "spectrometer": "光譜儀"}
 SRC_SYSTEM = "系統"
+# 電源供應器（TruPlasma）不是實驗啟動時才開的感測器，不放進 SENSOR_NAMES（那裡的 key 會被拿去對 enabled / sensors 取值）
+PSU_NAME = "電源"
+PSU_DEFAULT_PORT = "COM8"
+PSU_LOCAL_ADDRS = ("127.0.0.1", "::1")
+PSU_CSV_HEADER = (["Timestamp", "Elapsed(s)", "Phase", "Uset_V", "Iset_A", "Pset_kW",
+                   "Uact_V", "Iact_peak_A", "Pact_kW"]
+                  + [name for _, name in MEASUREMENTS]
+                  + ["RelaysOn", "PowerOn", "Interlock", "AlarmActive", "WarningActive", "AlarmCode",
+                     "Mode", "Regulation", "ArcRate_per_s", "ArcCnt_Imax", "ArcCnt_UxI", "ArcCnt_dU",
+                     "ArcCnt_Usag", "ArcCnt_ArcBurst", "Bits0", "Bits1", "Bits2", "Bits3"])
 
 
 # ---------------------------------------------------------------------------
@@ -734,8 +746,9 @@ class MonitorService:
         self.zero_warned = False
 
         # 溫度／距離時間序列（本次監測全程）：[(elapsed 秒, 值或 None), ...]；開始新監測時清空
-        self.series = {"temp": [], "distance": []}
-        self.series_sent = {"temp": 0, "distance": 0}  # 已透過 SSE 送出的筆數
+        # psu_u / psu_i：電源電壓、電流（峰值），只在實驗錄製中且電源已連線時累積
+        self.series = {"temp": [], "distance": [], "psu_u": [], "psu_i": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u": 0, "psu_i": 0}  # 已透過 SSE 送出的筆數
 
         # 光譜儀（Optical Spectrum）：波長軸 meta、降採樣歷史（熱圖用）、最新一筆完整解析度（即時光譜用）
         self.opt_meta = None
@@ -745,6 +758,15 @@ class MonitorService:
 
         self.notices = collections.deque(maxlen=30)
         self.notice_seq = 0
+
+        # 電源供應器（TruPlasma）：獨立於實驗的開始／停止，只由使用者明確連線／斷線；啟動伺服器時不自動連線。
+        # controller 的 callback 都在它自己的 thread 上跑。
+        self.psu_port = ""
+        self.psu_lock = threading.Lock()       # 連線流程（避免兩個請求同時 connect）
+        self._psu_csv_lock = threading.Lock()  # 懶開／寫入／關閉 truplasma CSV 串行化
+        self._psu_csv_rec = None               # 目前已為哪個 ExperimentRecorder 開過 CSV
+        self.psu = TruPlasmaController(self._psu_open_port, on_cycle=self._psu_on_cycle,
+                                       on_event=self._psu_on_event)
 
     # ---------------- 事件推送 ----------------
     def subscribe(self):
@@ -1094,7 +1116,7 @@ class MonitorService:
         diag = {k: (R_OK, "") for k in enabled}
         if com.lower() in AUTO_COM_VALUES and "temp" not in sim:
             try:
-                found, tried = find_temperature_port()
+                found, tried = find_temperature_port(skip=self.psu_busy_ports())
             except Exception as e:  # noqa: BLE001
                 found, tried = None, []
                 slog(ERROR, SENSOR_NAMES["temp"], f"自動偵測 COM 埠失敗: {e}", e)
@@ -1232,7 +1254,8 @@ class MonitorService:
             "experiment_labels": p["labels"],
             "enabled": dict(enabled),
             # 模擬資料絕不能被誤認為真實量測：這裡列出所有模擬來源
-            "simulated": sorted(k for k in self.simulated if enabled.get(k)),
+            "simulated": sorted(k for k in self.simulated if enabled.get(k)
+                                or (k == "psu" and self.psu.connected)),
             "simulate_faults": self.sim_faults,
             # 寫進實驗紀錄，之後才知道 Temperature(C) 套了哪一組校正（RawTemperature(C) 是溫度計原始讀值）
             "temperature_calibration": (None if "temp" in self.simulated or not enabled["temp"] else
@@ -1247,6 +1270,7 @@ class MonitorService:
                                  else "KEYENCE LK-G5000 (LKIF2.dll)") if enabled["distance"] else None),
                 "spectrometer": (("模擬（sim_devices.SimSpectrometer）" if "spectrometer" in self.simulated
                                   else "AvaSpec-ULS2048L (avaspecx64.dll)") if enabled["spectrometer"] else None),
+                "power_supply": self._psu_device_label() if self.psu.connected else None,
             },
             "platform": {"os": platform.platform(), "python": platform.python_version()},
             "spectrogram": None,
@@ -1258,11 +1282,7 @@ class MonitorService:
             recorder.on_write_error = self._on_write_error
             recorder.attach_log()
             if info["simulated"]:
-                with open(recorder.path("SIMULATED.txt"), "w", encoding="utf-8-sig") as f:
-                    f.write("本實驗資料夾含模擬資料，不是真實量測！\n"
-                            "THIS FOLDER CONTAINS SIMULATED DATA, NOT REAL MEASUREMENTS.\n"
-                            f"模擬來源 / simulated: {', '.join(info['simulated'])}\n"
-                            f"故障模擬 / faults: {self.sim_faults}\n")
+                self._write_simulated_txt(recorder, info)
             if enabled["temp"]:
                 recorder.open_csv("temperature", f"temperature_{experiment_id}.csv",
                                   ["Timestamp", "Elapsed(s)", "Temperature(C)", "Status", "RawTemperature(C)"],
@@ -1296,8 +1316,9 @@ class MonitorService:
             self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
             self.spec_total = 0
             self.spec_freqs = None
-            self.series = {"temp": [], "distance": []}
-            self.series_sent = {"temp": 0, "distance": 0}
+            self.series = {"temp": [], "distance": [], "psu_u": [], "psu_i": []}
+            self.series_sent = {"temp": 0, "distance": 0, "psu_u": 0, "psu_i": 0}
+            self._psu_csv_rec = None
             self.opt_meta = None
             self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
             self.opt_total = 0
@@ -1359,6 +1380,114 @@ class MonitorService:
         for t in threads.values():
             t.start()
         return {"ok": True, "state": self.snapshot()}, 200
+
+    def _write_simulated_txt(self, recorder, info):
+        with open(recorder.path("SIMULATED.txt"), "w", encoding="utf-8-sig") as f:
+            f.write("本實驗資料夾含模擬資料，不是真實量測！\n"
+                    "THIS FOLDER CONTAINS SIMULATED DATA, NOT REAL MEASUREMENTS.\n"
+                    f"模擬來源 / simulated: {', '.join(info['simulated'])}\n"
+                    f"故障模擬 / faults: {self.sim_faults}\n")
+
+    # ---------------- 電源供應器（TruPlasma） ----------------
+    def _psu_open_port(self):
+        """controller 的 port_factory（在 controller thread 上呼叫）：模擬時回傳模擬器，否則開真實 COM 埠。"""
+        if "psu" in self.simulated:
+            return SimTruPlasma(faults=self.sim_faults)
+        return open_serial(self.psu_port)
+
+    def _psu_device_label(self):
+        return "模擬（truplasma_package.SimTruPlasma）" if "psu" in self.simulated else self.psu_port
+
+    def psu_busy_ports(self):
+        """電源連線中使用的 COM 埠；溫度計自動偵測要跳過，不能去探測它。"""
+        return (self.psu_port,) if self.psu_port and self.psu.phase != "disconnected" else ()
+
+    def psu_connect(self, port):
+        """連線（已連線／連線中則不動作）。等第一輪通訊完成才回傳；失敗時丟 RuntimeError（訊息給使用者看）。"""
+        port = (port or PSU_DEFAULT_PORT).strip()
+        with self.psu_lock:
+            if self.psu.phase != "disconnected":
+                return
+            t = self.psu.thread
+            if t and t.is_alive():  # 上一次的 thread 還在收尾（controller.connect 會直接忽略）
+                t.join(2)
+            self.psu_port = port
+            self.psu.connect()
+        deadline = time.monotonic() + 8
+        while self.psu.phase == "connecting" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self.psu.phase == "disconnected":
+            raise RuntimeError(self.psu.error or f"無法連線電源（{port}）")
+
+    def _psu_on_event(self, level, msg):
+        try:
+            self.notify(level if level in ("info", "warning", "error", "success") else "info", PSU_NAME, msg,
+                        src=PSU_NAME)
+        except Exception as e:  # noqa: BLE001  callback 不可丟例外
+            slog(ERROR, PSU_NAME, f"電源事件通知失敗: {e}", e)
+
+    def _psu_on_cycle(self, snap):
+        """controller thread 每輪呼叫：推 SSE，實驗錄製中再寫 CSV 與曲線。不可丟例外、不可卡住。"""
+        try:
+            self.publish("psu", snap)
+            self._psu_record(snap)
+        except Exception as e:  # noqa: BLE001
+            self._log_exception_once("psu", e, "電源資料處理錯誤")
+
+    def _psu_record(self, snap):
+        st = snap.get("status")
+        if not snap.get("connected") or st is None:
+            return
+        with self.lock:
+            rec = self.recorder if self.phase == "running" else None
+            start = self.start_time
+        if rec is None:
+            return
+        now = time.time()
+        sp = snap["setpoints"]
+        alarm = snap.get("alarm") or {}
+        meas = snap.get("measurements") or {}
+        counts = st.get("arc_counts") or {}
+        row = ([iso_now(now), f"{now - start:.3f}", snap["phase"], sp["u"], sp["i"], sp["p"],
+                st["u_act"], st["i_act_peak"], st["p_act"]]
+               + ["" if meas.get(name) is None else meas[name] for _, name in MEASUREMENTS]
+               + [int(st["relays_on"]), int(st["power_on"]), int(st["interlock"]), int(st["alarm_active"]),
+                  int(st["warning_active"]), alarm.get("code", ""), st["mode"], st["regulation"], st["arc_rate"]]
+               + [counts.get(k, "") for k in ("Imax", "UxI", "dU", "Usag", "ArcBurst")]
+               + list(st["bits"]))
+        with self._psu_csv_lock:
+            with self.lock:  # 停止流程會先把 phase 改掉再收尾，這裡重查才不會在關檔後又開新檔
+                if self.phase != "running" or self.recorder is not rec:
+                    return
+            if self._psu_csv_rec is not rec:
+                self._psu_csv_rec = rec  # 開檔失敗也只試一次，避免每輪洗版
+                try:
+                    rec.open_csv("truplasma", f"truplasma_{rec.experiment_id}.csv", PSU_CSV_HEADER,
+                                 encoding="utf-8-sig")
+                except OSError as e:
+                    slog(ERROR, PSU_NAME, f"無法建立電源 CSV: {e}", e)
+                    rec.add_error(f"truplasma CSV 建立失敗: {e}")
+                    return
+                self._psu_mark_recorder(rec)
+            rec.write_row("truplasma", row)
+        self.add_series_point("psu_u", st["u_act"])
+        self.add_series_point("psu_i", st["i_act_peak"])
+
+    def _psu_mark_recorder(self, rec):
+        """電源在實驗中途才連線時，補寫裝置與模擬標示（實驗開始時已連線的在 start() 就寫好了）。"""
+        info = rec.info
+        sim = list(info.get("simulated") or [])
+        if "psu" in self.simulated and "psu" not in sim:
+            sim.append("psu")
+            info["simulated"] = sim
+            self._write_simulated_txt(rec, info)
+        rec.update(devices=dict(info.get("devices") or {}, power_supply=self._psu_device_label()))
+
+    def _psu_close_csv(self, recorder):
+        with self._psu_csv_lock:  # 等進行中的懶開／寫入做完，之後 phase 已不是 running，不會再開
+            if self._psu_csv_rec is recorder:
+                recorder.close("truplasma")
+                self._psu_csv_rec = None
 
     def _log_start(self, experiment_id, recorder, info, p, raw, pf, com_port, audio_sel):
         """開始監測的完整紀錄：實驗 id、各感測器啟用狀態與裝置、所有參數。"""
@@ -1428,6 +1557,8 @@ class MonitorService:
                 if recorder:
                     recorder.add_error(f"{name} 執行緒未在時限內結束")
         try:
+            if recorder:
+                self._psu_close_csv(recorder)
             self._save_all(recorder, reason)
         except Exception as e:  # noqa: BLE001
             slog(ERROR, SRC_SYSTEM, f"存檔流程錯誤: {e}", e)
@@ -1996,6 +2127,16 @@ class MonitorService:
             self.shutdown_done = True
             running = self.phase == "running"
         temp_cal.stop()
+        # 電源第一個處理：disconnect 會先把輸出關掉再放掉 COM 埠（不必等實驗存檔）
+        try:
+            if self.psu.connected:
+                try:
+                    self.psu.disconnect()
+                except KeyboardInterrupt:  # 第二次 Ctrl+C／SIGTERM：仍等它送完關閉輸出的命令（最多 3 秒）
+                    self.psu.disconnect()
+                slog(INFO, PSU_NAME, "伺服器關閉：已關閉電源輸出並斷線")
+        except Exception as e:  # noqa: BLE001
+            slog(ERROR, PSU_NAME, f"關閉電源連線失敗: {e}", e)
         slog(INFO, SRC_SYSTEM, f"伺服器關閉中（{STOP_REASONS.get(reason, reason)}）：停止所有監測、關閉檔案並釋放硬體…")
         if running:
             self.request_stop(reason)
@@ -2069,7 +2210,7 @@ class TempCalibration:
             com = "SIM"
         elif com.lower() in AUTO_COM_VALUES:
             try:
-                found, tried = find_temperature_port()
+                found, tried = find_temperature_port(skip=service.psu_busy_ports())
             except Exception as e:  # noqa: BLE001
                 slog(ERROR, SENSOR_NAMES["temp"], f"校正：自動偵測 COM 埠失敗: {e}", e)
                 return {"ok": False, "errors": ["自動偵測 COM 埠失敗：詳細內容見伺服器 log"]}, 400
@@ -2269,6 +2410,116 @@ def api_stream():
     return resp
 
 
+# ---------------------------------------------------------------------------
+# 電源供應器（TruPlasma）：控制只准本機（接電源的電腦）；緊急關閉任何裝置都可以（它只會關閉輸出）
+# ---------------------------------------------------------------------------
+def _psu_can_control():
+    return request.remote_addr in PSU_LOCAL_ADDRS
+
+
+def _psu_call(fn, local_only=True):
+    """跑一個電源操作：先檢查本機限制，再把驗證／狀態／通訊錯誤（訊息已是中文）轉成 400。"""
+    if local_only and not _psu_can_control():
+        return jsonify({"ok": False, "errors": ["只有在接電源的電腦本機上才能控制電源"]}), 403
+    try:
+        body = fn() or {}
+    except (ValueError, RuntimeError, OSError) as e:  # OSError 含 ProtocolError 與逾時
+        return jsonify({"ok": False, "errors": [str(e) or "電源沒有回應（逾時）"]}), 400
+    return jsonify({"ok": True, **body})
+
+
+def _psu_connected():
+    if not service.psu.connected:
+        raise RuntimeError("電源未連線")
+    return service.psu
+
+
+@app.get("/api/psu/state")
+def api_psu_state():
+    return jsonify({"ok": True, "snapshot": service.psu.snapshot(), "params": dict(service.psu.params),
+                    "param_table": [p.to_dict() for p in PARAMS], "pulse_modes": PULSE_MODES,
+                    "can_control": _psu_can_control(), "simulated": "psu" in service.simulated})
+
+
+@app.post("/api/psu/connect")
+def api_psu_connect():
+    raw = request.get_json(silent=True) or {}
+
+    def run():
+        service.psu_connect(str(raw.get("port") or ""))
+        return {"snapshot": service.psu.snapshot()}
+    return _psu_call(run)
+
+
+@app.post("/api/psu/disconnect")
+def api_psu_disconnect():
+    def run():
+        service.psu.disconnect()
+        return {"snapshot": service.psu.snapshot()}
+    return _psu_call(run)
+
+
+@app.post("/api/psu/setpoints")
+def api_psu_setpoints():
+    raw = request.get_json(silent=True) or {}
+    return _psu_call(lambda: {"setpoints": dict(zip("uip", _psu_connected().set_setpoints(
+        raw.get("u"), raw.get("i"), raw.get("p"))))})
+
+
+@app.post("/api/psu/output")
+def api_psu_output():
+    raw = request.get_json(silent=True) or {}
+
+    def run():
+        if not isinstance(raw.get("on"), bool):
+            raise ValueError("on 必須是 true 或 false")
+        psu = _psu_connected()
+        if raw["on"]:
+            psu.power_on()
+        else:
+            psu.power_off()
+        return {"snapshot": psu.snapshot()}
+    return _psu_call(run)
+
+
+@app.post("/api/psu/estop")
+def api_psu_estop():
+    def run():
+        psu = _psu_connected()
+        psu.emergency_stop()
+        return {"snapshot": psu.snapshot()}
+    return _psu_call(run, local_only=False)
+
+
+@app.post("/api/psu/reset-alarms")
+def api_psu_reset_alarms():
+    return _psu_call(lambda: _psu_connected().reset_alarms())
+
+
+@app.post("/api/psu/reset-counters")
+def api_psu_reset_counters():
+    return _psu_call(lambda: _psu_connected().reset_counters())
+
+
+@app.post("/api/psu/params/read")
+def api_psu_params_read():
+    return _psu_call(lambda: {"params": _psu_connected().read_params()})
+
+
+@app.post("/api/psu/param")
+def api_psu_param():
+    raw = request.get_json(silent=True) or {}
+
+    def run():
+        try:
+            channel = int(raw.get("channel"))
+        except (TypeError, ValueError):
+            raise ValueError("channel 必須是整數") from None
+        return {"result": _psu_connected().write_param(channel, raw.get("value")),
+                "params": dict(service.psu.params)}
+    return _psu_call(run)
+
+
 _exit_reason = {"value": "sigint"}
 _console_handlers = []
 
@@ -2305,8 +2556,8 @@ def main():
     parser.add_argument("--host", default=HOST, help=f"監聽位址（預設 {HOST}）")
     parser.add_argument("--port", type=int, default=PORT, help=f"連接埠（預設 {PORT}）")
     parser.add_argument("--simulate", default="",
-                        help="以模擬資料取代指定感測器：temp,distance,audio,spectrometer（別名 spectrum/spec/avaspec）"
-                             "或 all（預設不模擬；音訊需明確列出）")
+                        help="以模擬資料取代指定感測器：temp,distance,audio,spectrometer（別名 spectrum/spec/avaspec）、"
+                             "psu（TruPlasma 電源模擬器）或 all（預設不模擬；音訊需明確列出）")
     parser.add_argument("--simulate-faults", action="store_true",
                         help="模擬感測器定期連續失敗 12 次再恢復，用來測試斷線／恢復通知")
     args = parser.parse_args()

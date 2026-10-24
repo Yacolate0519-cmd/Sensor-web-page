@@ -16,7 +16,7 @@ import numpy as np
 
 from rangefinder.constants import RC_OK
 
-SIM_KEYS = ("temp", "distance", "audio", "spectrometer")
+SIM_KEYS = ("temp", "distance", "audio", "spectrometer", "psu")
 FAULT_EVERY_S = 45     # 每 45 秒進入一次故障
 FAULT_LENGTH = 12      # 連續失敗 12 次（超過斷線門檻 10 次）
 FAULT_STEP = 4         # 溫度故障期間每 4 次失敗換一種原因，方便在 UI 看到不同的失敗分類
@@ -34,7 +34,7 @@ def parse_simulate(value):
     items = {alias.get(v, v) for v in items}
     unknown = items - set(SIM_KEYS)
     if unknown:
-        raise ValueError(f"未知的模擬項目：{', '.join(sorted(unknown))}（可用：temp, distance, audio, spectrometer, all）")
+        raise ValueError(f"未知的模擬項目：{', '.join(sorted(unknown))}（可用：temp, distance, audio, spectrometer, psu, all）")
     return items
 
 

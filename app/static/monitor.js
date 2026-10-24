@@ -687,10 +687,19 @@
     labels: ["Time (s)", "Distance (µm)"],
     color: () => theme.wave, unit: "µm", minRange: 500, decimals: 1,
   });
-  const seriesCharts = { temp: tempChart, distance: distChart };
+  const psuUChart = new SeriesChart($("cv-psu-u"), {
+    labels: ["Time (s)", "PSU Voltage (V)"],
+    color: () => theme.wave, unit: "V", minRange: 10, decimals: 1,
+  });
+  const psuIChart = new SeriesChart($("cv-psu-i"), {
+    labels: ["Time (s)", "PSU Current, peak (A)"],
+    color: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
+  });
+  // key 對應 /api/state 的 series；psu_* 不是感測器（沒有 sensors／enabled 項目），renderState 會略過
+  const seriesCharts = { temp: tempChart, distance: distChart, psu_u: psuUChart, psu_i: psuIChart };
   const optHeat = new SpectrumHeatmap($("cv-opt"));
   const optLive = new LiveSpectrum($("cv-opt-live"), optHeat);
-  const charts = [specChart, tempChart, distChart, optHeat, optLive];
+  const charts = [specChart, tempChart, distChart, psuUChart, psuIChart, optHeat, optLive];
 
   function b64Bytes(b64) {
     const bin = atob(b64);
@@ -743,7 +752,7 @@
     specChart.configure(meta);
     $("spec-note").textContent =
       `NFFT ${meta.nfft} · overlap ${meta.noverlap} · ${meta.sample_rate} Hz · 顯示 ${meta.history_duration} 秒`;
-    tempChart.clear(); distChart.clear();
+    Object.values(seriesCharts).forEach((c) => c.clear());
   }
 
   // ------------------------------------------------------------------
@@ -942,6 +951,7 @@
     $("temp-note").textContent = s.enabled.temp && s.phase !== "idle" ? `${s.params.com_port} · 每秒更新` : "每秒更新";
     $("dist-note").textContent = `絕對距離 · 模式 ${s.params.refl_mode === "1" ? "1-鏡面反射" : "0-漫反射"}`;
     Object.entries(seriesCharts).forEach(([k, c]) => {
+      if (!s.sensors[k]) return;
       const t = s.sensors[k].text;
       if (c.statusText !== t) { c.statusText = t; c.requestDraw(); }
     });
@@ -962,7 +972,7 @@
 
     // 模擬模式標示
     const sim = s.simulated || [];
-    const simNames = { temp: "溫度", distance: "距離", audio: "音訊", spectrometer: "光譜儀" };
+    const simNames = { temp: "溫度", distance: "距離", audio: "音訊", spectrometer: "光譜儀", psu: "電源" };
     const chip = $("sim-chip");
     chip.hidden = !sim.length;
     chip.textContent = `模擬模式：${sim.map((k) => simNames[k] || k).join("、")}${s.simulate_faults ? "（含故障）" : ""}`;
@@ -970,6 +980,7 @@
 
     // 未啟用的感測器：圖卡顯示「未啟用」（尚未開始過監測時仍顯示「等待資料」）
     Object.entries(seriesCharts).forEach(([k, c]) => {
+      if (!(k in s.enabled)) return;
       const off = s.phase !== "idle" && !s.enabled[k];
       if (c.disabled !== off) { c.disabled = off; c.requestDraw(); }
     });
@@ -1109,6 +1120,238 @@
   }
 
   // ------------------------------------------------------------------
+  // 電源供應器（TruPlasma）：狀態由 SSE `psu` 事件推送，操作都走 /api/psu/*。
+  // 控制只准伺服器本機（can_control）；緊急關閉任何裝置都可用。
+  // ------------------------------------------------------------------
+  const psu = { snap: null, table: [], modes: [], canControl: false, params: {}, spInit: false };
+  const PSU_GROUPS = [["pulse", "脈衝與頻率"], ["arc", "電弧管理"], ["ignition", "點火"], ["comm", "通訊（唯讀）"]];
+  const PSU_PHASE_TONE = { disconnected: "neutral", connecting: "warn", idle: "ok", relays: "warn",
+    powering: "warn", on: "error", stopping: "warn" };
+  let psuParamRows = {};   // channel → 該列的 DOM（寫入成功後只更新那一列）
+
+  const fmtNum = (v, d) => (v === null || v === undefined ? "--" : Number(v).toFixed(d));
+  const fmtParam = (v) => (v === null || v === undefined ? "—" : String(Number(Number(v).toPrecision(6))));
+  const psuErrors = (r, fallback) => (r.data && r.data.errors) || [fallback];
+
+  function renderPsu() {
+    const sn = psu.snap;
+    if (!sn) return;
+    const st = sn.status, phase = sn.phase, ctl = psu.canControl, conn = sn.connected;
+    const badge = $("psu-phase");
+    badge.textContent = sn.phase_text; badge.dataset.tone = PSU_PHASE_TONE[phase] || "neutral";
+    $("psu-panel").dataset.live = phase === "on" ? "1" : "0";
+    renderPsuAge();
+
+    // 警報／警告橫幅：優先顯示電源回報的代碼，否則顯示控制器記下的最近一次異常（例如輸出被自動關閉的原因）
+    const banner = $("psu-banner");
+    let msg = "", level = "alarm";
+    if (sn.alarm) { msg = `${sn.alarm.level === "alarm" ? "警報" : "警告"} ${sn.alarm.code}：${sn.alarm.text}`; level = sn.alarm.level; }
+    else if (st && st.alarm_active) msg = "警報中（讀取警報代碼中…）";
+    else if (st && st.warning_active) { msg = "警告中（讀取警報代碼中…）"; level = "warning"; }
+    else if (sn.error && conn) { msg = sn.error; level = "warning"; }
+    banner.hidden = !msg; banner.textContent = msg; banner.dataset.level = level;
+
+    document.querySelectorAll("#psu-flags .psu-flag").forEach((el) => {
+      const on = !!(st && st[el.dataset.flag]);
+      el.dataset.on = on ? "1" : "0";
+    });
+    $("psu-u").textContent = fmtNum(st && st.u_act, 1);
+    $("psu-i").textContent = fmtNum(st && st.i_act_peak, 2);
+    $("psu-p").textContent = fmtNum(st && st.p_act, 3);
+    $("psu-u-set").textContent = conn ? `設定 ${sn.setpoints.u} V` : "";
+    $("psu-i-set").textContent = conn ? `設定 ${sn.setpoints.i} A` : "";
+    $("psu-p-set").textContent = conn ? `設定 ${sn.setpoints.p} kW` : "";
+    $("psu-mode").textContent = (st && st.mode) || "--";
+    $("psu-reg").textContent = (st && st.regulation) || "--";
+    $("psu-arc-rate").textContent = st ? `${st.arc_rate} 次/秒` : "--";
+    $("psu-arc-counts").textContent = st && st.arc_counts
+      ? Object.entries(st.arc_counts).map(([k, v]) => `${k} ${v}`).join(" · ") : "";
+    const tb = $("psu-meas").tBodies[0];
+    // 以欄位名稱對應列：/api/psu/state（jsonify 會排序 key）和 SSE 的 key 順序不同，不能按位置對
+    const meas = sn.measurements || {};
+    const keys = Object.keys(meas).sort();
+    if ([...tb.rows].map((r) => r.dataset.key).join() !== keys.join()) {
+      tb.innerHTML = "";
+      keys.forEach((k) => { const tr = tb.insertRow(); tr.dataset.key = k; tr.insertCell().textContent = k; tr.insertCell(); });
+    }
+    [...tb.rows].forEach((tr) => { const v = meas[tr.dataset.key]; tr.cells[1].textContent = v === null ? "--" : v; });
+
+    // 設定值輸入框：每次連線只用電源的設定值填一次，之後不蓋掉使用者正在輸入的內容
+    if (!conn) psu.spInit = false;
+    else if (!psu.spInit) {
+      psu.spInit = true;
+      $("psu-sp-u").value = sn.setpoints.u; $("psu-sp-i").value = sn.setpoints.i; $("psu-sp-p").value = sn.setpoints.p;
+    }
+
+    // 按鈕啟用：開啟只在 idle；關閉只在 relays/powering/on；參數寫入只在 idle；緊急關閉只要連線就能按
+    const idle = phase === "idle";
+    $("psu-local-note").hidden = ctl;
+    $("psu-port").disabled = !ctl || phase !== "disconnected";
+    $("psu-connect").disabled = !ctl || phase !== "disconnected";
+    $("psu-disconnect").disabled = !ctl || phase === "disconnected";
+    ["psu-sp-u", "psu-sp-i", "psu-sp-p", "psu-apply", "psu-reset-counters", "psu-read-params"]
+      .forEach((id) => { $(id).disabled = !ctl || !conn; });
+    $("psu-on").disabled = !ctl || !idle;
+    $("psu-off").disabled = !ctl || !["relays", "powering", "on"].includes(phase);
+    $("psu-reset-alarms").disabled = !ctl || !idle;
+    $("psu-estop").disabled = !conn;
+    document.querySelectorAll("#psu-param-list [data-write]").forEach((el) => { el.disabled = !ctl || !idle; });
+  }
+
+  function renderPsuAge() {
+    const sn = psu.snap;
+    if (!sn) return;
+    const age = sn.last_ok ? fmtAgo(Math.max(0, Date.now() / 1000 - sn.last_ok)) : "";
+    $("psu-meta").textContent = [sn.identity, sn.connected && age ? `最後正常 ${age}` : ""].filter(Boolean).join(" · ");
+  }
+
+  function psuParamRow(p) {
+    const cur = psu.params[p.channel];
+    const row = document.createElement("div");
+    row.className = "psu-param";
+    const name = document.createElement("div");
+    name.className = "psu-param-name";
+    name.textContent = `${p.name}  ch${p.channel}`;
+    const val = document.createElement("div");
+    val.className = "psu-param-val";
+    val.textContent = `${fmtParam(cur)}${p.unit && cur !== undefined && cur !== null ? " " + p.unit : ""}`;
+    row.append(name, val);
+    if (p.writable) {
+      let input;
+      if (p.fmt === "mode" || p.fmt === "bool") {
+        input = document.createElement("select");
+        const opts = p.fmt === "mode" ? psu.modes.map((m, n) => [1 << n, `${n} ${m}`]) : [[0, "0（關）"], [1, "1（開）"]];
+        opts.forEach(([v, label]) => input.add(new Option(label, v)));
+        if (cur === undefined || cur === null || !opts.some(([v]) => v === cur)) input.add(new Option("—", ""), 0);
+        input.value = cur === undefined || cur === null || !opts.some(([v]) => v === cur) ? "" : String(cur);
+      } else {
+        input = document.createElement("input");
+        input.type = "number"; input.inputMode = "decimal";
+        input.step = p.kind === "float" ? "any" : "1";
+        input.min = p.fmt === "bits" ? 0 : (p.lo ?? ""); input.max = p.fmt === "bits" ? 255 : (p.hi ?? "");
+        input.value = cur === undefined || cur === null ? "" : fmtParam(cur);
+        if (p.lo !== null && p.hi !== null) input.placeholder = `${p.lo}–${p.hi}`;
+      }
+      input.dataset.write = "1";
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "btn btn-sm btn-ghost"; btn.textContent = "寫入"; btn.dataset.write = "1";
+      btn.addEventListener("click", () => writePsuParam(p, input));
+      const box = document.createElement("div");
+      box.className = "psu-param-edit";
+      box.append(input, btn);
+      row.append(box);
+    }
+    if (p.note) {
+      const note = document.createElement("div");
+      note.className = "psu-param-note";
+      note.textContent = p.note;
+      row.append(note);
+    }
+    return row;
+  }
+
+  function renderPsuParams() {
+    const list = $("psu-param-list");
+    list.innerHTML = ""; psuParamRows = {};
+    if (!Object.keys(psu.params).length) {
+      list.innerHTML = '<p class="field-hint">尚未讀取：連線後按「讀取參數」。</p>';
+      return;
+    }
+    PSU_GROUPS.forEach(([g, label]) => {
+      const items = psu.table.filter((p) => p.group === g);
+      if (!items.length) return;
+      const h = document.createElement("h4");
+      h.textContent = label;
+      list.append(h);
+      items.forEach((p) => { const row = psuParamRow(p); psuParamRows[p.channel] = row; list.append(row); });
+    });
+    renderPsu();
+  }
+
+  async function psuPost(path, body) {
+    return api(path, { method: "POST", body: body || {} });
+  }
+
+  async function loadPsu() {
+    const r = await api("/api/psu/state");
+    if (!r.ok || !r.data) return;
+    Object.assign(psu, { snap: r.data.snapshot, table: r.data.param_table, modes: r.data.pulse_modes,
+      canControl: r.data.can_control, params: r.data.params || {} });
+    renderPsuParams();
+    renderPsu();
+  }
+
+  async function psuAction(path, body) {
+    const r = await psuPost(path, body);
+    if (!r.ok) await showError(psuErrors(r, "電源操作失敗"));
+    if (r.data && r.data.snapshot) { psu.snap = r.data.snapshot; renderPsu(); }
+    return r;
+  }
+
+  async function onPsuConnect() {
+    $("psu-connect").disabled = true;
+    await psuAction("/api/psu/connect", { port: $("psu-port").value.trim() || "COM8" });
+    renderPsu();
+  }
+
+  function psuInputs() {
+    return { u: $("psu-sp-u").value, i: $("psu-sp-i").value, p: $("psu-sp-p").value };
+  }
+
+  async function onPsuApply() {
+    await psuAction("/api/psu/setpoints", psuInputs());
+  }
+
+  async function onPsuOn() {
+    const sp = psu.snap.setpoints, inp = psuInputs();
+    // 開啟的是「電源目前已套用的設定值」；輸入框改了卻沒套用時不讓開，避免以為開的是新值
+    if (Number(inp.u) !== sp.u || Number(inp.i) !== sp.i || Number(inp.p) !== sp.p) {
+      await showError(["輸入框的設定值還沒套用：請先按「套用設定值」再開啟輸出"]);
+      return;
+    }
+    const ok = await dialog({
+      title: "開啟輸出", lead: "即將開啟高壓輸出（最高 1000 V / 25 A / 10 kW）。請確認電解槽與安全防護都已就緒。",
+      items: [`電壓設定 ${sp.u} V`, `電流設定 ${sp.i} A`, `功率設定 ${sp.p} kW`],
+      question: "確定要開啟輸出？", okText: "開啟輸出", cancelText: "取消",
+    });
+    if (ok) await psuAction("/api/psu/output", { on: true });
+  }
+
+  async function writePsuParam(p, input) {
+    const raw = input.value;
+    if (raw === "") { await showError([`${p.name}：請先輸入要寫入的值`]); return; }
+    const cur = psu.params[p.channel];
+    const show = (v) => (p.fmt === "mode" ? `${v}（${psu.modes[Math.log2(v)] ?? "?"}）` : fmtParam(v));
+    const ok = await dialog({
+      title: "寫入電源參數",
+      lead: `${p.name} ch${p.channel}：${show(cur)} → ${show(Number(raw))}（會寫入電源 EEPROM）`,
+      question: "確定要寫入？", okText: "寫入", cancelText: "取消",
+    });
+    if (!ok) return;
+    const r = await psuPost("/api/psu/param", { channel: p.channel, value: Number(raw) });
+    if (!r.ok) { await showError(psuErrors(r, "寫入失敗")); return; }
+    psu.params = r.data.params || psu.params;
+    const old = psuParamRows[p.channel], row = psuParamRow(p);
+    if (old) old.replaceWith(row);
+    psuParamRows[p.channel] = row;
+    renderPsu();
+  }
+
+  async function onPsuReadParams() {
+    const btn = $("psu-read-params");
+    btn.disabled = true; btn.textContent = "讀取中…";
+    try {
+      const r = await psuPost("/api/psu/params/read");
+      if (!r.ok) { await showError(psuErrors(r, "讀取參數失敗")); return; }
+      psu.params = r.data.params || {};
+      renderPsuParams();
+    } finally {
+      btn.textContent = "讀取參數";
+      renderPsu();
+    }
+  }
+
+  // ------------------------------------------------------------------
   // 復原與 SSE
   // ------------------------------------------------------------------
   async function loadSpectrogramBulk() {
@@ -1157,7 +1400,7 @@
     let wasOpen = false;
     es.onopen = () => {
       setDot(chip, "ok"); $("conn-text").textContent = "已連線";
-      if (wasOpen) resync(); // 斷線重連：重新復原
+      if (wasOpen) { resync(); loadPsu(); } // 斷線重連：重新復原
       wasOpen = true;
     };
     es.onerror = () => { setDot(chip, "error"); $("conn-text").textContent = "重新連線中"; };
@@ -1184,6 +1427,7 @@
       const msg = JSON.parse(e.data);
       if (syncing) pendingSpec.push(["col", msg]); else applySpecCol(msg);
     });
+    es.addEventListener("psu", (e) => { psu.snap = JSON.parse(e.data); renderPsu(); });
     es.addEventListener("toast", (e) => toast(JSON.parse(e.data)));
     es.addEventListener("resync", () => resync()); // 伺服器端佇列塞滿（例如分頁在背景太久）時要求重新同步
     es.addEventListener("reset", (e) => {
@@ -1200,10 +1444,21 @@
   $("refresh-com").addEventListener("click", () => loadCom(false));
   $("refresh-audio").addEventListener("click", () => loadAudio(true));
   setInterval(renderSensorAgo, 1000); // 狀態面板的「最後正常 N 秒前」每秒更新（含停止後）
+  setInterval(renderPsuAge, 1000);
+  $("psu-connect").addEventListener("click", onPsuConnect);
+  $("psu-disconnect").addEventListener("click", () => psuAction("/api/psu/disconnect"));
+  $("psu-apply").addEventListener("click", onPsuApply);
+  $("psu-on").addEventListener("click", onPsuOn);
+  $("psu-off").addEventListener("click", () => psuAction("/api/psu/output", { on: false }));
+  $("psu-reset-alarms").addEventListener("click", () => psuAction("/api/psu/reset-alarms"));
+  $("psu-reset-counters").addEventListener("click", () => psuAction("/api/psu/reset-counters"));
+  $("psu-estop").addEventListener("click", () => psuAction("/api/psu/estop"));
+  $("psu-read-params").addEventListener("click", onPsuReadParams);
 
   (async () => {
     connect();
     await Promise.all([loadCom(false), loadAudio(false)]);
     await sync();
+    loadPsu();
   })();
 })();
