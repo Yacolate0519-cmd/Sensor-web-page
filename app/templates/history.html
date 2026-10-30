@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>實驗紀錄</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='2' fill='%234c8dff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='monitor.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='history.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>實驗紀錄</h1>
+    </div>
+    <div class="topbar-meta">
+      <a class="chip" href="/" style="text-decoration:none" title="回到即時監測">即時監測</a>
+      <span class="chip chip-current" aria-current="page">實驗紀錄</span>
+    </div>
+  </header>
+
+  <div class="hist-layout">
+    <aside class="hist-side" aria-label="實驗列表">
+      <div class="hist-tools">
+        <input id="q" type="search" placeholder="搜尋標籤或實驗 ID" spellcheck="false" aria-label="搜尋實驗">
+        <button type="button" class="btn-icon" id="reload-list" title="重新整理列表" aria-label="重新整理列表">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <p class="field-hint" id="list-count">載入中…</p>
+      <ul class="exp-list" id="exp-list"></ul>
+    </aside>
+
+    <main class="hist-main" id="hist-main">
+      <div class="hist-empty" id="empty">從左側選一筆實驗，就會把它的電源、距離、溫度和光譜儀數據畫出來。</div>
+
+      <div id="detail" hidden>
+        <header class="hist-head">
+          <div>
+            <h2 id="d-title"></h2>
+            <p class="hist-sub" id="d-sub"></p>
+          </div>
+          <div class="hist-actions">
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-reset" disabled>重設縮放</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-refresh">重新載入</button>
+          </div>
+        </header>
+        <p class="hist-hint">在圖上拖曳選取時間範圍可放大，雙擊重設。所有圖共用同一條時間軸，單位是距實驗開始的秒數。藍底表示電源輸出中。</p>
+
+        <div class="hist-stats" id="d-stats"></div>
+
+        <div id="d-charts"></div>
+
+        <details class="hist-files" id="d-files-box">
+          <summary>原始檔案（<span id="d-files-n"></span>）</summary>
+          <ul id="d-files"></ul>
+        </details>
+        <details class="hist-files" id="d-errors-box" hidden>
+          <summary>實驗中的錯誤紀錄（<span id="d-errors-n"></span>）</summary>
+          <ul id="d-errors"></ul>
+        </details>
+      </div>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='history.js') }}"></script>
+</body>
+</html>

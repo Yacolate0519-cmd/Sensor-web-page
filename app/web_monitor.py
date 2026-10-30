@@ -56,11 +56,12 @@ from matplotlib import mlab  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pyaudio  # noqa: E402
-from flask import Flask, Response, jsonify, render_template, request  # noqa: E402
+from flask import Flask, Response, jsonify, redirect, render_template, request  # noqa: E402
 
 from rangefinder import LKIF2Device  # noqa: E402
 from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK  # noqa: E402
 import chunked_spectrogram  # noqa: E402
+import history  # noqa: E402
 import sim_devices  # noqa: E402
 import spectrometer_driver  # 只定義包裝類別；真正的驅動延遲到預檢／worker 啟動才 import
 from signal_package import AudioRecorder  # noqa: E402
@@ -2294,6 +2295,29 @@ class TempCalibration:
 temp_cal = TempCalibration()
 app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"),
             static_folder=os.path.join(APP_DIR, "static"))
+
+
+def _live_experiment_id():
+    """目前錄製中的實驗 ID（沒有則 None），歷史頁用來分辨「錄製中」與「中斷」。"""
+    with service.lock:
+        rec = service.recorder
+        return rec.experiment_id if rec is not None and service.phase in ("running", "stopping") else None
+
+
+history.init(app, DATA_DIR, _live_experiment_id)  # 實驗紀錄瀏覽（唯讀）：/history 與 /api/history/*
+
+
+@app.before_request
+def restrict_remote_clients():
+    """用 --host 0.0.0.0 開放給其他機器（例如 Tailscale 上的手機）時，遠端只能「瀏覽實驗紀錄」。
+    開始／停止監測、電源、校正、即時串流等一律只准本機，避免沒有驗證的控制端點暴露出去。"""
+    if request.remote_addr in PSU_LOCAL_ADDRS:
+        return None
+    if request.path == "/":
+        return redirect("/history")
+    if request.method in ("GET", "HEAD") and (request.path == "/history" or request.path.startswith(("/api/history/", "/static/"))):
+        return None
+    return jsonify({"ok": False, "errors": ["遠端只能瀏覽實驗紀錄；其他功能請在接儀器的電腦上操作"]}), 403
 
 
 # ---------------------------------------------------------------------------

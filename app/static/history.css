@@ -1,0 +1,91 @@
+/* 實驗紀錄頁：沿用 monitor.css 的色票與元件，這裡只放這一頁專用的版面。 */
+.chip-current { color: var(--text); border-color: var(--accent); }
+
+.hist-layout {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  min-height: calc(100vh - 49px);
+}
+.hist-side {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: calc(100vh - 49px); overflow-y: auto;
+  position: sticky; top: 49px; align-self: start;
+}
+.hist-tools { display: flex; gap: 8px; align-items: center; }
+.hist-tools input {
+  flex: 1; min-width: 0; padding: 7px 10px; font: inherit; font-size: 13px;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+}
+.hist-tools input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.exp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.exp-item {
+  width: 100%; text-align: left; font: inherit; color: var(--text);
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); cursor: pointer;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.exp-item:hover { border-color: var(--text-3); }
+.exp-item[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.exp-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.exp-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; min-width: 0; }
+.exp-title span:not(.dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp-meta { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.exp-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border-strong); color: var(--text-2);
+}
+.tag-sim { background: var(--warn); border-color: var(--warn); color: #1a1400; font-weight: 700; }
+.tag-warn { border-color: var(--warn); color: var(--warn); }
+
+.hist-main { padding: 20px 24px 48px; min-width: 0; }
+.hist-empty {
+  padding: 48px 16px; text-align: center; color: var(--text-2);
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+}
+.hist-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.hist-head h2 { margin: 0 0 4px; font-size: 18px; }
+.hist-sub { margin: 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.hist-actions { display: flex; gap: 8px; }
+.hist-hint { font-size: 12px; color: var(--text-3); margin: 10px 0 14px; }
+
+.hist-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.hist-stat { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.hist-stat small { display: block; font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+.hist-stat b { font-family: var(--mono); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.hist-sec { margin-bottom: 22px; }
+.hist-sec > h3 {
+  margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .06em;
+  color: var(--text-3); text-transform: uppercase;
+}
+.hchart {
+  margin: 0 0 10px; padding: 10px 12px 6px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+.hchart figcaption { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 6px; }
+.hchart h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.hlegend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-2); }
+.hlegend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 5px; }
+.hlegend i.dashed { border-top-style: dashed; }
+.hreadout { margin-left: auto; font: 12px var(--mono); color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 1em; }
+.hwrap { position: relative; width: 100%; }
+.hwrap canvas { display: block; width: 100%; background: var(--chart-bg); border-radius: var(--radius-sm); cursor: crosshair; }
+.hnote { margin: 10px 0 6px; font-size: 12px; color: var(--text-3); text-align: center; }
+
+.hist-files { margin: 14px 0 0; font-size: 13px; }
+.hist-files summary { cursor: pointer; color: var(--text-2); }
+.hist-files ul { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); line-height: 1.7; }
+.hist-files a { color: var(--accent); }
+.hist-files li { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .hist-layout { grid-template-columns: minmax(0, 1fr); }
+  .hist-side { position: static; max-height: 320px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .hist-main { padding: 16px 16px 40px; }
+}
