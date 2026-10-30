@@ -1233,19 +1233,22 @@
     const st = sn.status, phase = sn.phase, ctl = psu.canControl, conn = sn.connected, idle = phase === "idle";
     if (phase === "on" && psu.onSince === null) psu.onSince = Date.now();
     if (phase !== "on") psu.onSince = null;
-    const alarm = !!(st && st.alarm_active) || !!(sn.alarm && sn.alarm.level === "alarm");
+    // Test version 家族（61704／61711／61714）只是訊息：不顯示成紅色警報（docs/log-improvement-spec.md R3）
+    const testMsg = !!(sn.alarm && sn.alarm.category === "test_version");
+    const alarm = !!(st && st.alarm_active && !testMsg) || !!(sn.alarm && sn.alarm.level === "alarm");
     const secs = psu.onSince === null ? 0 : Math.floor((Date.now() - psu.onSince) / 1000);
     $("psu-phase").textContent = !conn ? "未連線" : alarm ? "警報" : phase === "on" ? `輸出中 ${String(Math.floor(secs/60)).padStart(2,"0")}:${String(secs%60).padStart(2,"0")}` : phase === "idle" ? "待機" : sn.phase_text;
     $("psu-phase").dataset.tone = alarm ? "error" : PSU_PHASE_TONE[phase] || "neutral";
     $("psu-panel").dataset.live = phase === "on" ? "1" : "0";
     renderPsuAge();
     let msg = "", level = "alarm";
-    if (sn.alarm) { msg = `${sn.alarm.level === "alarm" ? "警報" : "警告"} ${sn.alarm.code}：${sn.alarm.text}`; level = sn.alarm.level; }
+    if (testMsg) { msg = `電源訊息 ${sn.alarm.code}（Test version 家族，只記錄）：${sn.alarm.raw || ""}`; level = "info"; }
+    else if (sn.alarm) { msg = `${sn.alarm.level === "alarm" ? "警報" : "警告"} ${sn.alarm.code}：${sn.alarm.text}（原文：${sn.alarm.raw || "無"}）`; level = sn.alarm.level; }
     else if (alarm) msg = "警報中（讀取警報代碼中…）";
     else if (st && st.warning_active) { msg = "警告中（讀取警報代碼中…）"; level = "warning"; }
     else if (sn.error && conn) { msg = sn.error; level = "warning"; }
     $("psu-banner").hidden = !msg; $("psu-banner").dataset.level = level; $("psu-banner-text").textContent = msg;
-    $("psu-reset-alarms").hidden = !alarm;
+    $("psu-reset-alarms").hidden = !alarm && !(st && st.alarm_active);
     document.querySelectorAll("#psu-flags .psu-flag").forEach((el) => { el.dataset.on = st && st[el.dataset.flag] ? "1" : "0"; });
     const meas = sn.measurements || {}, mode = psu.params[33];
     for (const [pole, u, i] of [["a", "Uavg_A_V", "Iavg_A_A"], ["b", "Uavg_B_V", "Iavg_B_A"]]) {

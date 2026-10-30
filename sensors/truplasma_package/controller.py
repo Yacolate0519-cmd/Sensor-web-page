@@ -42,8 +42,12 @@ PHASE_TEXT = {
 
 def alarm_message(alarm):
     """Log/notice text for an alarm dict: our translation next to the unit's own text, never instead of it."""
-    kind = "警報" if alarm["level"] == "alarm" else "警告"
     raw = alarm.get("raw") or ""
+    if alarm.get("category") == proto.TEST_VERSION:
+        return (f"電源訊息 {alarm['code']}（Test version 家族：手冊編號 61704／61711／61714 說法互相矛盾）："
+                f"原文：{raw or '電源沒有附文字'}；手冊原文：{alarm.get('manual') or '本程式未收錄，待查手冊'}。"
+                f"依預設只記錄、不通知（電源回報類別：{'警報' if alarm.get('unit_level') == 'alarm' else '警告'}）")
+    kind = "警報" if alarm["level"] == "alarm" else "警告"
     if alarm["text"] and alarm["text"] != raw:
         return f"電源{kind} {alarm['code']}：{alarm['text']}（原文：{raw or '電源沒有附文字'}）"
     return f"電源{kind} {alarm['code']}：{raw or '電源沒有附文字'}（對照表沒有此碼，以上為電源原文）"
@@ -82,6 +86,8 @@ class TruPlasmaController:
         self.status = None
         self.measurements = {}
         self.alarm = None
+        self.alarm_logged = None    # last non-Test-version code written to the log (change detection)
+        self.test_codes_seen = set()  # Test-version family codes already logged on this connection
         self.identity = ""
         self.error = ""
         self.fail_count = 0
@@ -202,7 +208,9 @@ class TruPlasmaController:
 
     # ----- internals -----
     def _event(self, level, msg):
-        log.log(logging.WARNING if level in ("warning", "error") else logging.INFO, "TruPlasma: %s", msg)
+        """level: info / success / warning / error, or "quiet" (log only, the web side shows no notice).
+        The web side writes a second line at the same level, so both lines always agree."""
+        log.log({"error": logging.ERROR, "warning": logging.WARNING}.get(level, logging.INFO), "TruPlasma: %s", msg)
         if self.on_event:
             try:
                 self.on_event(level, msg)
@@ -305,16 +313,37 @@ class TruPlasmaController:
             try:
                 code, text = proto.read_alarm(port, self.address)
                 if code:
+                    unit_level = "alarm" if st.alarm_active else "warning"
                     alarm = {"code": code, "text": proto.ALARM_TEXT.get(code, text), "raw": text,
-                             "level": "alarm" if st.alarm_active else "warning"}
+                             "level": unit_level, "unit_level": unit_level}
+                    if code in proto.TEST_VERSION_CODES:
+                        # Not a fault: logged once per connection at INFO, no notice, not shown red.
+                        alarm.update(level="info", category=proto.TEST_VERSION,
+                                     manual=proto.TEST_VERSION_CODES[code])
             except proto.ProtocolError:
                 alarm = self.alarm
         with self.lock:
-            changed = (alarm or {}).get("code") != (self.alarm or {}).get("code")
+            prev = self.alarm
             self.measurements = values
             self.alarm = alarm
-        if changed and alarm:
-            self._event("error" if alarm["level"] == "alarm" else "warning", alarm_message(alarm))
+            # Raw text can change under the same code (61657 carries a temperature value): report every change.
+            new_text = alarm is not None and (prev is None
+                                              or (prev["code"], prev["raw"]) != (alarm["code"], alarm["raw"]))
+            if alarm is None:
+                log_it = False
+                self.alarm_logged = None
+            elif alarm.get("category") == proto.TEST_VERSION:
+                # The unit shows one code at a time and alternates e.g. 61657 → 61711 → 61657; the
+                # Test-version code must not make the real warning look new again.
+                log_it = alarm["code"] not in self.test_codes_seen
+                self.test_codes_seen.add(alarm["code"])
+            else:
+                log_it = alarm["code"] != self.alarm_logged
+                self.alarm_logged = alarm["code"]
+        if log_it:
+            level = {"alarm": "error", "warning": "warning"}.get(alarm["level"], "quiet")
+            self._event(level, alarm_message(alarm))
+        if new_text:
             if self.on_alarm:
                 try:
                     self.on_alarm(dict(alarm))

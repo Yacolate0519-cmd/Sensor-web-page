@@ -235,3 +235,82 @@ def test_failing_at_stop_is_reported(svc, records):
     still = records.find("停止時仍在失敗", "距離")
     assert still and still[0][0] == "WARNING" and "RC=0x2008" in still[0][2]
     assert exp_json(rec)["failure_summary"]["距離"]["failing_at_stop"]["codes"]["RC=0x2008"] > 10
+
+
+# ---------------------------------------------------------------------------
+# R3 去重與等級一致
+# ---------------------------------------------------------------------------
+TEST_VERSION_TEXT = "Mod=0: Test version. Internal use only."
+
+
+@pytest.fixture
+def psu_rig(records):
+    sim = ScriptedPsu(seed=1)
+    events = []
+    c = ctl.TruPlasmaController(lambda: sim, cycle_s=0.1, on_event=lambda lv, m: events.append((lv, m)))
+    c.connect()
+    assert wait_for(lambda: c.phase == ctl.IDLE)
+    yield c, sim, events
+    c.disconnect()
+
+
+def test_test_version_family_is_quiet_and_logged_once(psu_rig, records):
+    c, sim, events = psu_rig
+    sim.set_message(61714, TEST_VERSION_TEXT, "alarm")
+    assert wait_for(lambda: c.alarm and c.alarm["code"] == 61714)
+    sim.set_message(61711, TEST_VERSION_TEXT, "warning")
+    assert wait_for(lambda: c.alarm and c.alarm["code"] == 61711)
+    sim.set_message(61714, TEST_VERSION_TEXT, "alarm")
+    time.sleep(0.5)
+    tv = [e for e in events if "Test version" in e[1]]
+    assert [lv for lv, _ in tv] == ["quiet", "quiet"]  # 61714、61711 各一次，61714 再出現不重寫
+    assert all("61704／61711／61714" in m and TEST_VERSION_TEXT in m for _, m in tv)
+    assert "Test ver.Internal use only" in tv[0][1]  # 手冊原文
+    assert not [m for _, m in tv if "故障" in m or "測試版" in m]
+    assert c.alarm["level"] == "info" and c.alarm["category"] == "test_version"
+    assert all(r[0] == "INFO" for r in records.find("Test version"))
+
+
+def test_real_warning_not_relogged_when_alternating_with_test_version(psu_rig):
+    c, sim, events = psu_rig
+    for code, text in ((61657, "Mod=2:Overtemp warn,4512"), (61711, TEST_VERSION_TEXT),
+                       (61657, "Mod=2:Overtemp warn,4512")):
+        sim.set_message(code, text)
+        assert wait_for(lambda: c.alarm and c.alarm["code"] == code)
+    time.sleep(0.3)
+    assert len([e for e in events if "61657" in e[1]]) == 1
+
+
+def test_psu_event_lines_have_same_level(svc, records):
+    svc.psu_connect("SIM")
+    svc.psu_ports[-1].set_message(61657, "Mod=2:Overtemp warn,4512")
+    assert wait_for(lambda: len(records.find("61657")) >= 2)
+    svc.psu_ports[-1].set_message(61714, TEST_VERSION_TEXT, "alarm")
+    assert wait_for(lambda: len(records.find("61714")) >= 2)
+    for code in ("61657", "61714"):
+        rows = records.find(code)
+        assert {r[1] for r in rows} == {wm.SRC_SYSTEM, wm.PSU_NAME}, rows
+        assert len({r[0] for r in rows}) == 1, rows
+    assert records.find("61657")[0][0] == "WARNING" and records.find("61714")[0][0] == "INFO"
+    assert not [n for n in svc.notices if "61714" in n["message"]]
+    assert [n for n in svc.notices if "61657" in n["message"]]
+
+
+class _NoRangefinder:
+    def __init__(self, *a, **k):
+        pass
+
+    def open(self):
+        raise LKIFError("OpenDevice 失敗", 0x2000)
+
+
+def test_preflight_logged_once_and_failure_in_one_line(svc, records, monkeypatch):
+    monkeypatch.setattr(wm, "LKIF2Device", _NoRangefinder)
+    svc.simulated = set(sim_devices.SIM_KEYS) - {"distance"}
+    raw = dict(wm.DEFAULT_PARAMS, **LABELS)
+    svc.preflight(raw)
+    svc.preflight(raw)
+    assert len(records.find("預檢結果")) == 1
+    rows = [r for r in records.rows if r[1] == "距離"]
+    assert len(rows) == 1 and "RC=0x2000" in rows[0][2] and "停用" in rows[0][2]
+    assert not records.find("預檢警告")

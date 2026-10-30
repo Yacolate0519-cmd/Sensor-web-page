@@ -89,7 +89,8 @@ MAX_FAILURES = 10
 ESCALATE_FAILS = MAX_FAILURES
 ESCALATE_S = 5.0
 TRANSIENT_LOG_MAX = 5
-EVENTS_MAX = 500                # experiment JSON 的 events 筆數上限
+EVENTS_MAX = 500
+PREFLIGHT_DEDUP_S = 600         # 這段時間內預檢結果完全相同就不再寫 log                # experiment JSON 的 events 筆數上限
 # 溫度計校正（2026-10-22，TX-600N T1 套熱縮套，燒杯對玻璃溫度計，24 °C 與 38 °C 兩點線性擬合，殘差 ≤ 0.06 °C）：
 # 真實 = GAIN × 讀值 + OFFSET。只在 24~38 °C 驗證過，超出範圍是外插。模擬資料不套用。
 # 原始資料：Sensor_Data/calibration/tx600n_sleeve_20261022_*.csv
@@ -856,6 +857,8 @@ class MonitorService:
 
         self.sensors = {}
         self.preflight_reasons = {}  # 最近一次預檢各感測器的 {reason, detail}
+        self._pf_raw = {}            # 預檢失敗的原始例外文字（併進該感測器的預檢那一行）
+        self._pf_logged = (None, 0.0)  # 上一次寫進 log 的預檢結果與時間（同樣結果不重複寫）
         self._track = {}        # 感測器 key → log 用的狀態追蹤（節流與恢復訊息）
         self._pf_shown = set()  # 目前由預檢結果佔著狀態面板的感測器
         self._reset_sensor_display()
@@ -1232,7 +1235,7 @@ class MonitorService:
             dev.close()
             return True, None, (R_OK, "")
         except BaseException as e:  # noqa: BLE001  macOS 上 ctypes.WinDLL 不存在 → AttributeError
-            slog(WARN, SENSOR_NAMES["distance"], f"預檢：測距儀初始化失敗: {type(e).__name__}: {e}")
+            self._pf_raw["distance"] = f"{type(e).__name__}: {e}"  # 原始例外併進預檢結果那一行
             return False, "• 測距儀初始化失敗，距離監測將被停用", classify_rangefinder_error(e)
 
     def check_spectrometer(self):
@@ -1246,7 +1249,7 @@ class MonitorService:
                 slog(WARN, SENSOR_NAMES["spectrometer"], f"預檢後關閉光譜儀失敗: {e}")
             return True, None, (R_OK, "")
         except Exception as e:  # noqa: BLE001
-            slog(WARN, SENSOR_NAMES["spectrometer"], f"預檢：光譜儀初始化失敗: {type(e).__name__}: {e}")
+            self._pf_raw["spectrometer"] = f"{type(e).__name__}: {e}"
             return False, "• 光譜儀初始化失敗，光譜儀監測將被停用", classify_spectrometer_error(e)
 
     def validate_params(self, raw):
@@ -1327,6 +1330,8 @@ class MonitorService:
 
     def preflight(self, raw):
         warnings = []
+        sys_warnings = []  # 不屬於單一感測器的警告（磁碟空間）；感測器的已寫在各自的預檢行，不再重複
+        self._pf_raw = {}
         enabled = {"temp": True, "audio": True, "distance": True, "spectrometer": True}
         sim = self.simulated
         com = str(raw.get("com_port", "") or "").strip()
@@ -1388,19 +1393,25 @@ class MonitorService:
             disk = {"free_bytes": free, "est_bytes_per_hour": per_hour}
             if disk_warn:
                 warnings.append(disk_warn)
+                sys_warnings.append(disk_warn)
         except OSError as e:
             errors.append(f"無法建立存檔資料夾 {DATA_DIR}: {e}")
 
-        for k, (r, d) in diag.items():  # 預檢結果寫 log（含被停用的原因）
-            slog(INFO if enabled[k] and r == R_OK else WARN, SENSOR_NAMES[k],
-                 f"預檢：{'可用' if enabled[k] else '停用'} [{r}] {REASON_LABELS[r]}" + (f"：{d}" if d else ""))
-        for w in warnings:
-            slog(WARN, SRC_SYSTEM, "預檢警告：" + w.lstrip("• "))
-        for e in errors:
-            slog(ERROR, SRC_SYSTEM, "預檢錯誤：" + e)
-        slog(INFO if not errors else ERROR, SRC_SYSTEM,
-             f"預檢結果：{'通過' if not errors else '未通過'}（啟用 "
-             f"{'、'.join(SENSOR_NAMES[k] for k in enabled if enabled[k]) or '無'}；警告 {len(warnings)} 項）")
+        lines = [(INFO if enabled[k] and r == R_OK else WARN, SENSOR_NAMES[k],
+                  f"預檢：{'可用' if enabled[k] else '停用'} [{r}] {REASON_LABELS[r]}" + (f"：{d}" if d else "")
+                  + (f"（原始：{self._pf_raw[k]}）" if k in self._pf_raw else ""))
+                 for k, (r, d) in diag.items()]
+        lines += [(WARN, SRC_SYSTEM, "預檢警告：" + w.lstrip("• ")) for w in sys_warnings]
+        lines += [(ERROR, SRC_SYSTEM, "預檢錯誤：" + e) for e in errors]
+        lines.append((INFO if not errors else ERROR, SRC_SYSTEM,
+                      f"預檢結果：{'通過' if not errors else '未通過'}（啟用 "
+                      f"{'、'.join(SENSOR_NAMES[k] for k in enabled if enabled[k]) or '無'}；警告 {len(warnings)} 項）"))
+        # 網頁先呼叫 /api/preflight、確認後 /api/start 再檢查一次：結果相同就只記第一次
+        now = time.time()
+        if lines != self._pf_logged[0] or now - self._pf_logged[1] > PREFLIGHT_DEDUP_S:
+            for level, src, msg in lines:
+                slog(level, src, msg)
+        self._pf_logged = (lines, now)
         return {"ok": not errors, "errors": errors, "warnings": warnings,
                 "enabled": enabled, "parsed": parsed, "com_port": com if enabled["temp"] else "",
                 "disk": disk, "diag": self.preflight_reasons}
@@ -1641,7 +1652,12 @@ class MonitorService:
             raise RuntimeError(self.psu.error or f"無法連線電源（{port}）")
 
     def _psu_on_event(self, level, msg):
+        """controller 的事件：controller 自己寫一行（來源「系統」），這裡再寫一行（來源「電源」），兩行等級相同。
+        "quiet"（Test version 家族等）只寫 INFO、不跳通知。"""
         try:
+            if level == "quiet":
+                slog(INFO, PSU_NAME, f"{msg}（未通知）")
+                return
             self.notify(level if level in ("info", "warning", "error", "success") else "info", PSU_NAME, msg,
                         src=PSU_NAME)
         except Exception as e:  # noqa: BLE001  callback 不可丟例外

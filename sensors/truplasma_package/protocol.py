@@ -53,6 +53,13 @@ ALARM_TEXT = {
     61666: "無法起弧（No Plasma）", 61670: "冷卻水進水溫度過低",
 }
 
+# "Test version" family: the unit reports "Mod=n: Test version. Internal use only." under these codes, and the
+# manual lists them inconsistently (61714 is "A 61714 Test ver.Internal use only" in the p.61 message table;
+# 61704/61711 text not transcribed here). Default handling agreed 2026-10-31: INFO, no notice, not red, not
+# called a fault, and no claim that the firmware is a test build. Value = manual text (None = not on file).
+TEST_VERSION = "test_version"
+TEST_VERSION_CODES = {61704: None, 61711: None, 61714: "A 61714 Test ver.Internal use only（手冊 p.61 訊息表）"}
+
 
 class ProtocolError(IOError):
     pass
