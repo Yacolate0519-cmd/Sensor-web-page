@@ -1582,6 +1582,8 @@ class MonitorService:
                 # 正常/待機/初始化中的感測器標為已停止；失敗中的保留最後的具體原因供事後查看
                 if self.enabled.get(key) and s["reason"] in (R_OK, R_IDLE, R_INIT):
                     s["reason"], s["detail"] = R_STOPPED, "監測已停止"
+        if self.psu.phase in ("relays", "powering", "on"):  # 手動或自動停止都提醒；不替使用者關高壓輸出
+            self.notify("warning", "警告", "監測已停止，但電源仍在輸出中：請確認是否要關閉輸出", src=PSU_NAME)
         self.push_state()
 
     def _save_all(self, recorder, reason):

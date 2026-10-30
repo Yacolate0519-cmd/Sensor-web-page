@@ -1117,6 +1117,16 @@
     $("btn-stop").disabled = true;
     const r = await api("/api/stop", { method: "POST" });
     if (r.data && r.data.state) renderState(r.data.state);
+    // 停止監測不會動電源輸出；輸出還開著就問要不要一併關掉（只有本機能關）
+    const outputOn = psu.snap && ["relays", "powering", "on"].includes(psu.snap.phase);
+    if (r.ok && outputOn) {
+      const off = await dialog({
+        title: "電源仍在輸出", lead: "監測已停止，但電源高壓輸出還開著。",
+        question: psu.canControl ? "要現在關閉輸出嗎？" : "請到接電源的電腦關閉輸出，或按緊急關閉。",
+        okText: psu.canControl ? "關閉輸出" : "知道了", cancelText: psu.canControl ? "保持輸出" : null,
+      });
+      if (off && psu.canControl) await psuAction("/api/psu/output", { on: false });
+    }
   }
 
   // ------------------------------------------------------------------
@@ -1371,10 +1381,15 @@
       await showError(["輸入框的設定值還沒套用：請先按「套用設定值」再開啟輸出"]);
       return;
     }
+    // 電源 CSV 只在實驗錄製中才寫；沒在錄就開輸出，這段電壓電流不會存檔也無法補錄
+    const recording = !!(state && state.phase === "running");
+    const items = [`電壓設定 ${sp.u} V`, `電流設定 ${sp.i} A`, `功率設定 ${sp.p} kW`];
+    if (!recording) items.push("⚠ 目前沒有在錄製實驗：輸出期間的電壓電流不會存檔");
     const ok = await dialog({
       title: "開啟輸出", lead: "即將開啟高壓輸出（最高 1000 V / 25 A / 10 kW）。請確認電解槽與安全防護都已就緒。",
-      items: [`電壓設定 ${sp.u} V`, `電流設定 ${sp.i} A`, `功率設定 ${sp.p} kW`],
-      question: "確定要開啟輸出？", okText: "開啟輸出", cancelText: "取消",
+      items,
+      question: recording ? "確定要開啟輸出？" : "沒有錄製也要開啟輸出？（要錄製請先取消，開始監測）",
+      okText: recording ? "開啟輸出" : "仍然開啟輸出", cancelText: "取消",
     });
     if (ok) await psuAction("/api/psu/output", { on: true });
   }
