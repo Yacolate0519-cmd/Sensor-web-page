@@ -314,3 +314,57 @@ def test_preflight_logged_once_and_failure_in_one_line(svc, records, monkeypatch
     rows = [r for r in records.rows if r[1] == "距離"]
     assert len(rows) == 1 and "RC=0x2000" in rows[0][2] and "停用" in rows[0][2]
     assert not records.find("預檢警告")
+
+
+# ---------------------------------------------------------------------------
+# R4 網頁文字
+# ---------------------------------------------------------------------------
+def test_alarm_text_names_head_and_never_says_disconnect(svc, records):
+    start(svc)
+    rangefinder(svc).set_script([(1e9, "ALARM")])
+    assert wait_for(lambda: records.find("持續失敗", "距離"), 15)
+    card = svc.sensors["distance"]
+    assert card["detail"] == f"HEAD {wm.RANGEFINDER_HEAD} 收不到反射光（ALARM）：檢查距離、角度、表面反光，或換 HEAD"
+    assert card["text"] == "沒有有效值" and card["level"] == "error"
+    head, advice = wm.split_detail(card["detail"])
+    assert head.endswith("（ALARM）") and "換 HEAD" in advice
+    toast = [n for n in svc.notices if n["title"].startswith("距離")][-1]
+    assert head in toast["message"] and "原因與建議見狀態卡" in toast["message"]
+    said = [r[2] for r in records.rows if r[1] == "距離"] + [n["message"] for n in svc.notices]
+    assert not [t for t in said if "斷線" in t or "USB" in t]
+
+
+def test_usb_wording_only_for_communication_rc():
+    code, detail, usb = wm.rangefinder_read_error(LKIFError("Read failed", 0x2003))
+    assert usb and code == "RC=0x2003" and "USB 可能中斷" in detail and "RC=0x2003" in detail
+    code, detail, usb = wm.rangefinder_read_error(LKIFError("Read failed", 0x1005))
+    assert not usb and "RC=0x1005" in detail and "USB 可能" not in detail
+    code, detail, usb = wm.rangefinder_read_error(ValueError("boom"))
+    assert not usb and code == "ValueError" and "USB" not in detail
+    for status, (_, text) in wm.RANGEFINDER_STATUS_DIAG.items():
+        assert "斷線" not in text and "USB" not in text and f"（{status}" in text.replace("過遠，", "").replace("過近，", "")
+
+
+def test_usb_disconnect_card_and_toast(svc, records):
+    start(svc)
+    rangefinder(svc).set_script([(1e9, 0x2001)])
+    assert wait_for(lambda: records.find("持續失敗", "距離"), 15)
+    card = svc.sensors["distance"]
+    assert card["text"] == "通訊中斷" and "RC=0x2001" in card["detail"] and "USB 可能中斷" in card["detail"]
+    toast = [n for n in svc.notices if n["title"].startswith("距離")][-1]
+    assert toast["level"] == "error" and "RC=0x2001" in toast["message"]
+
+
+def test_61657_wording():
+    msg = ctl.alarm_message({"code": 61657, "text": "電源溫度警告", "raw": "Mod=2:Overtemp warn,4512",
+                             "level": "warning"})
+    assert "電源溫度警告（原文：Mod=2:Overtemp warn,4512）" in msg
+    assert "過溫" not in msg and "過熱" not in msg and "風扇" in msg
+    from truplasma_package.protocol import ALARM_TEXT
+    assert ALARM_TEXT[61657] == "電源溫度警告"
+
+
+def test_card_detail_has_no_sensor_name_prefix():
+    assert wm.MonitorService._disabled_detail("距離", "LK-G5000 未連線：檢查 USB 線") == "LK-G5000 未連線：檢查 USB 線"
+    assert wm.split_detail("短現象：原因：再細分") == ("短現象", "原因：再細分")
+    assert wm.split_detail("沒有冒號") == ("沒有冒號", "")

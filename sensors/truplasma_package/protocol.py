@@ -48,9 +48,16 @@ ALARM_TEXT = {
     61618: "Inverter 異常", 61619: "U800 異常", 61620: "U800 異常", 61621: "U800 異常",
     61623: "無負載", 61624: "短路", 61625: "電弧密度過高", 61631: "冷卻水進水溫度異常",
     61694: "PFC 緊急停止", 61695: "反向過電流", 61709: "輸出緊急停止", 61710: "風扇關閉過久",
-    61654: "電弧過多", 61657: "過溫警告", 61658: "冷卻水流量過低", 61659: "冷卻水流向錯誤",
+    61654: "電弧過多", 61657: "電源溫度警告", 61658: "冷卻水流量過低", 61659: "冷卻水流向錯誤",
     61661: "介面通訊中斷", 61663: "目前控制來源通訊中斷", 61665: "設定值與實際值偏差過大",
     61666: "無法起弧（No Plasma）", 61670: "冷卻水進水溫度過低",
+}
+
+# Advice appended to the log line / notice (cause + what happened + what to do). 61657: the source module
+# (Mod 0 = main board, 1-4 = HVPS1-4) and the value are only in the unit's text, so never call it overheated.
+ALARM_ADVICE = {
+    61657: "溫度超過警告門檻，來源模組與溫度值見原文（Mod=0 主控板、1–4 為 HVPS1–4，未確認）；"
+           "輸出仍在運作時請檢查散熱風扇與冷卻水，並看電源面板訊息",
 }
 
 # "Test version" family: the unit reports "Mod=n: Test version. Internal use only." under these codes, and the

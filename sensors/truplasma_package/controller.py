@@ -48,9 +48,11 @@ def alarm_message(alarm):
                 f"原文：{raw or '電源沒有附文字'}；手冊原文：{alarm.get('manual') or '本程式未收錄，待查手冊'}。"
                 f"依預設只記錄、不通知（電源回報類別：{'警報' if alarm.get('unit_level') == 'alarm' else '警告'}）")
     kind = "警報" if alarm["level"] == "alarm" else "警告"
+    advice = proto.ALARM_ADVICE.get(alarm["code"])
+    advice = f"：{advice}" if advice else ""
     if alarm["text"] and alarm["text"] != raw:
-        return f"電源{kind} {alarm['code']}：{alarm['text']}（原文：{raw or '電源沒有附文字'}）"
-    return f"電源{kind} {alarm['code']}：{raw or '電源沒有附文字'}（對照表沒有此碼，以上為電源原文）"
+        return f"電源{kind} {alarm['code']}：{alarm['text']}（原文：{raw or '電源沒有附文字'}）{advice}"
+    return f"電源{kind} {alarm['code']}：{raw or '電源沒有附文字'}（對照表沒有此碼，以上為電源原文）{advice}"
 
 
 def open_serial(port, baudrate=115200):

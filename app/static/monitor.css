@@ -264,6 +264,14 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .sr-fails { color: var(--err); margin-left: auto; }
 .sr-meta[hidden], .sr-detail[hidden], .sr-last[hidden], .sr-fails[hidden] { display: none; }
 .sr-detail { padding-left: 16px; font-size: 12px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.sr-more > summary { cursor: pointer; color: var(--text); }
+.sr-more > summary::after { content: "（展開原因與建議）"; color: var(--text-3); }
+.sr-more[open] > summary::after { content: ""; }
+.sr-more.no-adv > summary { list-style: none; cursor: default; }
+.sr-more.no-adv > summary::-webkit-details-marker { display: none; }
+.sr-more.no-adv > summary::after { content: ""; }
+.sr-more.no-adv > .sr-adv { display: none; }
+.sr-adv { margin-top: 2px; }
 
 /* ---------- 數值卡片 ---------- */
 .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }

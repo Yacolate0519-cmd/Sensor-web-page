@@ -476,13 +476,30 @@ def classify_spectrometer_error(exc):
     return R_ERROR, "光譜儀發生未預期的錯誤：詳細內容見實驗 log"
 
 
-# 測距儀 FloatResult 非 VALID 時的分類（Unknown/INVALID 另外處理）
+# 測距儀讀的 OUT 0 對應的感測頭：2026-10-30 實測感測頭接 HEAD A 時 OUT 0 全是 ALARM，換到 HEAD B 後才有 VALID
+RANGEFINDER_HEAD = "B"
+# 測距儀 FloatResult 非 VALID 時的分類（Unknown/INVALID 另外處理）。格式「短現象：原因與建議」，
+# ALARM 是量測值無效（USB 仍連著、每次都讀得到），不可寫成斷線或 USB 中斷
 RANGEFINDER_STATUS_DIAG = {
-    "WAITING": (R_NO_DATA, "測距儀等待資料中：尚未取得量測值，確認控制器為量測模式且取樣已開始"),
-    "+RANGEOVER": (R_OUT_OF_RANGE, "目標超出量測範圍（過遠）：調整感測頭與目標的距離"),
-    "-RANGEOVER": (R_OUT_OF_RANGE, "目標超出量測範圍（過近）：調整感測頭與目標的距離"),
-    "ALARM": (R_WIRING, "量測警報：受光量不足或感測頭接線異常，檢查感測頭連接與目標表面"),
+    "WAITING": (R_NO_DATA, "控制器尚未送出量測值（WAITING）：剛開始量測的前一兩筆屬正常；持續出現時確認控制器在量測模式"),
+    "+RANGEOVER": (R_OUT_OF_RANGE, "目標超出量測範圍（過遠，+RANGEOVER）：調整感測頭與目標的距離"),
+    "-RANGEOVER": (R_OUT_OF_RANGE, "目標超出量測範圍（過近，-RANGEOVER）：調整感測頭與目標的距離"),
+    "ALARM": (R_WIRING, f"HEAD {RANGEFINDER_HEAD} 收不到反射光（ALARM）：檢查距離、角度、表面反光，或換 HEAD"),
 }
+
+
+def rangefinder_read_error(exc):
+    """讀值函式丟出的例外 → (code, detail, 是否通訊層錯誤)。「USB 可能中斷」只用在 RC 0x2xxx
+    （與 0x2000 Open Device Failed、0x2001 Device Not Opened 同一組的裝置／通訊類錯誤），並附錯誤碼。"""
+    if isinstance(exc, LKIFError):
+        code = f"RC=0x{exc.rc:04X}"
+        if 0x2000 <= exc.rc <= 0x2FFF:
+            return code, (f"讀值函式回傳通訊層錯誤 {code}（{rc_text(exc.rc)}）：USB 可能中斷；"
+                          "檢查 USB 線與控制器電源。短暫出現後自動恢復可不處理"), True
+        return code, (f"控制器回報錯誤 {code}（{rc_text(exc.rc)}）：不是 USB 中斷；"
+                      "持續出現時確認控制器設定，或停止後重新開始量測"), False
+    return type(exc).__name__, (f"讀值時發生程式例外（{type(exc).__name__}: {exc}）：不是儀器回報的錯誤碼；"
+                                "持續發生時 traceback 會寫進實驗 log"), False
 
 
 def diagnose_audio_device(index):
@@ -1025,7 +1042,7 @@ class MonitorService:
             if level is not None:
                 s["level"] = level
             if level == "ok":
-                s.update(reason=R_OK, detail="", summary="", last_ok=time.time(), fail_count=0)
+                s.update(reason=R_OK, detail="", last_ok=time.time(), fail_count=0)
                 self._pf_shown.discard(key)
                 event = self._tracker(key).ok(time.time())
                 if event is None and prev != R_OK:
@@ -1033,7 +1050,6 @@ class MonitorService:
             elif reason is not None:
                 s["reason"] = reason
                 s["detail"] = detail or ""
-                s["summary"] = split_detail(detail)[0]
                 if reason not in NON_FAILURE_REASONS:
                     s["fail_count"] += 1
                 self._pf_shown.discard(key)
@@ -1053,8 +1069,7 @@ class MonitorService:
             ep = tr.ep
             escalated = ep["escalated"]
             s = self.sensors[key]
-            s.update(value=None, reason=reason, detail=detail or "", summary=split_detail(detail)[0],
-                     fail_count=ep["fails"], level="error" if escalated else "warn",
+            s.update(value=None, reason=reason, detail=detail or "", fail_count=ep["fails"], level="error" if escalated else "warn",
                      text=(text or ("通訊中斷" if comm else "沒有有效值")) if escalated else "讀取失敗")
             self._pf_shown.discard(key)
         if action:
@@ -1430,7 +1445,7 @@ class MonitorService:
                              detail=self._disabled_detail(SENSOR_NAMES[k], d), fail_count=0)
                     self._pf_shown.add(k)
                 elif r != R_OK:  # 仍會啟用，但預檢已看出問題（例如 COM 埠不存在）
-                    s.update(text="預檢異常", value=None, reason=r, detail=f"{SENSOR_NAMES[k]}：{d}", fail_count=0,
+                    s.update(text="預檢異常", value=None, reason=r, detail=d, fail_count=0,
                              level="error" if r in (R_DRIVER, R_NOT_FOUND, R_ERROR) else "warn")
                     self._pf_shown.add(k)
                 elif k in self._pf_shown:
@@ -1441,8 +1456,8 @@ class MonitorService:
 
     @staticmethod
     def _disabled_detail(name, detail):
-        """「未啟用」的說明：帶出底層分類原因（例如 距離：此系統不是 Windows…）。"""
-        return f"{name}：{detail}" if detail else f"{name}未啟用"
+        """「未啟用」的說明：帶出底層分類原因（例如 此系統不是 Windows…）。狀態卡本身已標名稱，不再重複。"""
+        return detail or f"{name}未啟用"
 
     # ---------------- 開始 ----------------
     def start(self, raw, confirmed):
@@ -2012,8 +2027,8 @@ class MonitorService:
                         log(None, "感測器斷線" if escalated else "讀取失敗")
                         self.add_series_point("temp", None)
                 except Exception as e:  # noqa: BLE001
-                    self.sensor_failed("temp", R_ERROR, f"讀取溫度時發生錯誤（{type(e).__name__}: {e}）："
-                                       "第一次升級為持續失敗時，完整 traceback 會寫進實驗 log",
+                    self.sensor_failed("temp", R_ERROR, f"讀取溫度時發生程式例外（{type(e).__name__}: {e}）："
+                                       "不是溫度計回報的錯誤；持續發生時 traceback 會寫進實驗 log",
                                        code=type(e).__name__, comm=True, exc=e)
                     log(None, "連接錯誤")
                     self.add_series_point("temp", None)
@@ -2021,7 +2036,8 @@ class MonitorService:
         except BaseException as e:  # noqa: BLE001  worker 意外死掉也要留下紀錄並關檔
             slog(ERROR, "溫度", f"溫度 worker 異常結束: {e}", e)
             recorder.add_error(f"溫度 worker 異常結束: {e}")
-            self.notify("error", "溫度監測中斷", "溫度監測意外中止，詳細內容見實驗 log", src="溫度")
+            self.notify("error", "溫度監測中斷",
+                        "溫度：監測執行緒意外中止，之後不會再有溫度數據（例外與 traceback 見實驗 log）", src="溫度")
         finally:
             recorder.close("temperature")
 
@@ -2068,7 +2084,8 @@ class MonitorService:
                         if zero_seconds >= 3:
                             # 呼叫端已確認持續 3 秒，直接升級；之後每段都記一次失敗，讓「仍在失敗」摘要能計數
                             self.zero_warned = True
-                            self.sensor_failed("audio", R_NO_DATA, "訊號全為 0：麥克風權限未開、靜音或未接",
+                            self.sensor_failed("audio", R_NO_DATA, "連續 3 秒錄到的訊號全為 0："
+                                               "麥克風權限未開、設備靜音或未接；檢查 Windows 隱私權設定與麥克風開關",
                                                code="全為 0", confirmed=True, text="訊號全為 0")
                         elif zero_seconds == 0 and (self.zero_warned or failing):
                             self.zero_warned = failing = False
@@ -2081,13 +2098,14 @@ class MonitorService:
                     failing = True
                     self.sensor_failed("audio", R_ERROR,
                                        f"錄音時發生錯誤（{type(audio_error).__name__}: {audio_error}）："
-                                       "持續發生時 traceback 會寫進實驗 log",
+                                       "檢查麥克風是否被拔除或被其他程式佔用；持續發生時 traceback 會寫進實驗 log",
                                        code=type(audio_error).__name__, comm=True, exc=audio_error, text="錄製錯誤")
                     stop_event.wait(update_interval)
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "音訊", f"音訊監測錯誤: {e}", e)
             recorder.add_error(f"音訊監測錯誤: {e}")
-            self.notify("warning", "警告", "音訊監測出現問題，監測將繼續但不會有音訊數據", src="音訊")
+            self.notify("warning", "音訊初始化失敗",
+                        "音訊：初始化失敗，本次實驗沒有音訊數據；其他感測器照常（原因與建議見狀態卡）", src="音訊")
             reason, detail = init_diag or (R_ERROR, "音訊初始化失敗：詳細內容見實驗 log")
             self.set_sensor("audio", text="初始化失敗", level="error", reason=reason, detail=detail)
         finally:
@@ -2194,19 +2212,19 @@ class MonitorService:
                         self.sensor_failed("distance", reason, detail, code=code)
                 except Exception as e:  # noqa: BLE001
                     log(f"ERROR: {e}")
+                    code, detail, usb = rangefinder_read_error(e)
                     if isinstance(e, LKIFError):
-                        code = f"RC=0x{e.rc:04X}"
                         recorder.note_code("距離", code, value=e.rc, text=rc_text(e.rc), raw=str(e), level="error")
-                    else:
-                        code = type(e).__name__
                     self.add_series_point("distance", None)
-                    self.sensor_failed("distance", R_ERROR, f"讀值函式錯誤（{e}）：通訊錯誤：USB 可能中斷",
-                                       code=code, comm=True, exc=e)
+                    # 讀值函式失敗一律算通訊類（升級時記 ERROR）；狀態卡只有 RC 0x2xxx 才寫「通訊中斷」
+                    self.sensor_failed("distance", R_ERROR, detail, code=code, comm=True, exc=e,
+                                       text="通訊中斷" if usb else "讀值錯誤")
                 stop_event.wait(interval)
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "距離", f"測距儀監測錯誤: {e}", e)
             recorder.add_error(f"測距儀監測錯誤: {e}")
-            self.notify("warning", "警告", "測距儀監測出現問題，監測將繼續但不會有距離數據", src="距離")
+            self.notify("warning", "距離初始化失敗",
+                        "距離：測距儀初始化失敗，本次實驗沒有距離數據；其他感測器照常（原因與建議見狀態卡）", src="距離")
             reason, detail = classify_rangefinder_error(e)
             self.set_sensor("distance", text="初始化失敗", value=None, level="error",
                             reason=reason, detail=detail)
@@ -2318,7 +2336,8 @@ class MonitorService:
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "光譜儀", f"光譜儀監測錯誤: {e}", e)
             recorder.add_error(f"光譜儀監測錯誤: {e}")
-            self.notify("warning", "警告", "光譜儀監測出現問題，監測將繼續但不會有光譜數據", src="光譜儀")
+            self.notify("warning", "光譜儀初始化失敗",
+                        "光譜儀：初始化失敗，本次實驗沒有光譜數據；其他感測器照常（原因與建議見狀態卡）", src="光譜儀")
             reason, detail = classify_spectrometer_error(e)
             self.set_sensor("spectrometer", text="初始化失敗", value=None, level="error", reason=reason, detail=detail)
         finally:

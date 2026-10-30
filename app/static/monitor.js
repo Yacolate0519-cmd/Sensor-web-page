@@ -912,8 +912,18 @@
       row.dataset.level = CARD_LEVELS[sensor.level] || "idle";
       badge.textContent = REASON_LABELS[reason] || reason;
       badge.dataset.tone = REASON_TONES[reason] || "neutral";
-      detail.textContent = sensor.detail || "";
-      detail.hidden = !sensor.detail;
+      // 說明文字是「短現象：原因與建議」：短現象常駐顯示，原因與建議收在可展開的區塊（重繪時保留展開狀態）
+      let more = detail.querySelector("details");
+      if (!more) {
+        detail.innerHTML = '<details class="sr-more"><summary></summary><div class="sr-adv"></div></details>';
+        more = detail.querySelector("details");
+      }
+      const text = sensor.detail || "", cut = text.indexOf("：");
+      const adv = cut >= 0 ? text.slice(cut + 1) : "";
+      more.querySelector("summary").textContent = cut >= 0 ? text.slice(0, cut) : text;
+      more.querySelector(".sr-adv").textContent = adv;
+      more.classList.toggle("no-adv", !adv);
+      detail.hidden = !text;
       fails.hidden = !sensor.fail_count;
       fails.textContent = `連續失敗 ${sensor.fail_count} 次`;
     });
