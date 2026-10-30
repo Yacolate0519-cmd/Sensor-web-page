@@ -920,8 +920,18 @@
     renderSensorAgo();
   }
 
+  // 秒數 → 「分:秒」，滿一小時改「時:分:秒」（長時間實驗用秒數不好讀）
+  function fmtClock(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60, p = (n) => String(n).padStart(2, "0");
+    return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+  }
+  const fmtSpan = (sec) => (sec = Math.round(sec)) >= 3600 ? `${Math.floor(sec / 3600)} 時 ${Math.floor(sec % 3600 / 60)} 分 ${sec % 60} 秒`
+    : sec >= 60 ? `${Math.floor(sec / 60)} 分 ${sec % 60} 秒` : `${sec} 秒`;
+
   function renderTime(elapsedInt, elapsed, duration, phase) {
-    $("time-num").textContent = String(elapsedInt);
+    $("time-num").textContent = fmtClock(elapsedInt);
+    $("time-unit").textContent = elapsedInt >= 3600 ? "時:分:秒" : "分:秒";
     const bar = $("time-bar"), prog = bar.parentElement;
     const d = duration;
     if (phase === "idle") {
@@ -933,7 +943,7 @@
       prog.classList.remove("indeterminate");
       bar.style.width = `${Math.min(100, elapsed / d * 100)}%`;
       const rem = Math.max(0, Math.ceil(d - elapsed));
-      $("time-sub").textContent = phase === "running" ? `剩餘 ${rem} 秒 · 共 ${d} 秒` : `共 ${d} 秒`;
+      $("time-sub").textContent = phase === "running" ? `剩餘 ${fmtSpan(rem)} · 共 ${fmtSpan(d)}` : `共 ${fmtSpan(d)}`;
     } else {
       prog.classList.toggle("indeterminate", phase === "running");
       bar.style.width = phase === "running" ? "100%" : "0";
