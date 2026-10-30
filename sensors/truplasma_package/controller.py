@@ -48,11 +48,9 @@ def alarm_message(alarm):
                 f"原文：{raw or '電源沒有附文字'}；手冊原文：{alarm.get('manual') or '本程式未收錄，待查手冊'}。"
                 f"依預設只記錄、不通知（電源回報類別：{'警報' if alarm.get('unit_level') == 'alarm' else '警告'}）")
     kind = "警報" if alarm["level"] == "alarm" else "警告"
-    advice = proto.ALARM_ADVICE.get(alarm["code"])
-    advice = f"：{advice}" if advice else ""
     if alarm["text"] and alarm["text"] != raw:
-        return f"電源{kind} {alarm['code']}：{alarm['text']}（原文：{raw or '電源沒有附文字'}）{advice}"
-    return f"電源{kind} {alarm['code']}：{raw or '電源沒有附文字'}（對照表沒有此碼，以上為電源原文）{advice}"
+        return f"電源{kind} {alarm['code']}：{alarm['text']}（原文：{raw or '電源沒有附文字'}）"
+    return f"電源{kind} {alarm['code']}：{raw or '電源沒有附文字'}（對照表沒有此碼，以上為電源原文）"
 
 
 def open_serial(port, baudrate=115200):
@@ -89,7 +87,10 @@ class TruPlasmaController:
         self.measurements = {}
         self.alarm = None
         self.alarm_logged = None    # last non-Test-version code written to the log (change detection)
-        self.test_codes_seen = set()  # Test-version family codes already logged on this connection
+        self.alarm_logged_raw = None  # its raw text, when that was last logged, and since when the code is active
+        self.alarm_raw_logged_t = 0.0
+        self.alarm_since = None
+        self.test_codes_seen = set()  # (code, raw) of Test-version messages already logged on this connection
         self.identity = ""
         self.error = ""
         self.fail_count = 0
@@ -209,10 +210,12 @@ class TruPlasmaController:
             }
 
     # ----- internals -----
-    def _event(self, level, msg):
+    def _event(self, level, msg, advice=""):
         """level: info / success / warning / error, or "quiet" (log only, the web side shows no notice).
-        The web side writes a second line at the same level, so both lines always agree."""
-        log.log({"error": logging.ERROR, "warning": logging.WARNING}.get(level, logging.INFO), "TruPlasma: %s", msg)
+        The web side writes a second line at the same level, so both lines always agree. advice (cause and what
+        to do) goes into this log line and the alarm dict (status banner), not into the short notice."""
+        log.log({"error": logging.ERROR, "warning": logging.WARNING}.get(level, logging.INFO), "TruPlasma: %s",
+                msg + (f"：{advice}" if advice else ""))
         if self.on_event:
             try:
                 self.on_event(level, msg)
@@ -270,7 +273,7 @@ class TruPlasmaController:
         age = now - self.phase_since
         if self.phase in (RELAYS, POWERING, ON):
             if st.alarm_active:
-                return self._drop_output("電源警報，輸出已關閉")
+                return self._drop_output("電源警報，輸出已關閉（警報代碼見下一行）", "error")
             if st.interlock:
                 return self._drop_output("Interlock 觸發，輸出已關閉")
         if self.phase == RELAYS:
@@ -317,7 +320,8 @@ class TruPlasmaController:
                 if code:
                     unit_level = "alarm" if st.alarm_active else "warning"
                     alarm = {"code": code, "text": proto.ALARM_TEXT.get(code, text), "raw": text,
-                             "level": unit_level, "unit_level": unit_level}
+                             "level": unit_level, "unit_level": unit_level,
+                             "advice": proto.ALARM_ADVICE.get(code, "")}
                     if code in proto.TEST_VERSION_CODES:
                         # Not a fault: logged once per connection at INFO, no notice, not shown red.
                         alarm.update(level="info", category=proto.TEST_VERSION,
@@ -331,20 +335,38 @@ class TruPlasmaController:
             # Raw text can change under the same code (61657 carries a temperature value): report every change.
             new_text = alarm is not None and (prev is None
                                               or (prev["code"], prev["raw"]) != (alarm["code"], alarm["raw"]))
+            now = time.monotonic()
+            note = None  # INFO line without notice: raw text changed, or the message cleared
             if alarm is None:
                 log_it = False
-                self.alarm_logged = None
+                if self.alarm_logged is not None:
+                    note = (f"電源訊息 {self.alarm_logged} 已消失（約 {now - self.alarm_since:.1f} 秒；"
+                            f"最後原文：{self.alarm_logged_raw or '無'}）")
+                self.alarm_logged = self.alarm_logged_raw = self.alarm_since = None
             elif alarm.get("category") == proto.TEST_VERSION:
                 # The unit shows one code at a time and alternates e.g. 61657 → 61711 → 61657; the
-                # Test-version code must not make the real warning look new again.
-                log_it = alarm["code"] not in self.test_codes_seen
-                self.test_codes_seen.add(alarm["code"])
+                # Test-version code must not make the real warning look new again. Logged once per raw text.
+                key = (alarm["code"], alarm["raw"])
+                log_it = key not in self.test_codes_seen
+                self.test_codes_seen.add(key)
             else:
                 log_it = alarm["code"] != self.alarm_logged
+                if log_it:
+                    self.alarm_since, self.alarm_raw_logged_t = now, now
+                elif alarm["raw"] != self.alarm_logged_raw and (
+                        self.alarm_raw_logged_t == self.alarm_since or now - self.alarm_raw_logged_t >= 60):
+                    # Same code, new text (61657 carries module and temperature): first change at once, then ≤1/min
+                    note = (f"電源訊息 {alarm['code']} 原文更新：{alarm['raw'] or '無'}"
+                            f"（之前：{self.alarm_logged_raw or '無'}）")
+                    self.alarm_raw_logged_t = now
+                if log_it or note:
+                    self.alarm_logged_raw = alarm["raw"]
                 self.alarm_logged = alarm["code"]
         if log_it:
             level = {"alarm": "error", "warning": "warning"}.get(alarm["level"], "quiet")
-            self._event(level, alarm_message(alarm))
+            self._event(level, alarm_message(alarm), alarm.get("advice", ""))
+        if note:
+            self._event("quiet", note)
         if new_text:
             if self.on_alarm:
                 try:

@@ -1253,7 +1253,7 @@
     renderPsuAge();
     let msg = "", level = "alarm";
     if (testMsg) { msg = `電源訊息 ${sn.alarm.code}（Test version 家族，只記錄）：${sn.alarm.raw || ""}`; level = "info"; }
-    else if (sn.alarm) { msg = `${sn.alarm.level === "alarm" ? "警報" : "警告"} ${sn.alarm.code}：${sn.alarm.text}（原文：${sn.alarm.raw || "無"}）`; level = sn.alarm.level; }
+    else if (sn.alarm) { msg = `${sn.alarm.level === "alarm" ? "警報" : "警告"} ${sn.alarm.code}：${sn.alarm.text}（原文：${sn.alarm.raw || "無"}）${sn.alarm.advice ? "：" + sn.alarm.advice : ""}`; level = sn.alarm.level; }
     else if (alarm) msg = "警報中（讀取警報代碼中…）";
     else if (st && st.warning_active) { msg = "警告中（讀取警報代碼中…）"; level = "warning"; }
     else if (sn.error && conn) { msg = sn.error; level = "warning"; }

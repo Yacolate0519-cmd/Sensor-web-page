@@ -311,6 +311,7 @@ def test_preflight_logged_once_and_failure_in_one_line(svc, records, monkeypatch
     svc.preflight(raw)
     svc.preflight(raw)
     assert len(records.find("預檢結果")) == 1
+    assert "通過，但停用 距離" in records.find("預檢結果")[0][2]
     rows = [r for r in records.rows if r[1] == "距離"]
     assert len(rows) == 1 and "RC=0x2000" in rows[0][2] and "停用" in rows[0][2]
     assert not records.find("預檢警告")
@@ -335,10 +336,12 @@ def test_alarm_text_names_head_and_never_says_disconnect(svc, records):
 
 
 def test_usb_wording_only_for_communication_rc():
-    code, detail, usb = wm.rangefinder_read_error(LKIFError("Read failed", 0x2003))
-    assert usb and code == "RC=0x2003" and "USB 可能中斷" in detail and "RC=0x2003" in detail
-    code, detail, usb = wm.rangefinder_read_error(LKIFError("Read failed", 0x1005))
-    assert not usb and "RC=0x1005" in detail and "USB 可能" not in detail
+    code, detail, usb = wm.rangefinder_read_error(LKIFError("Read failed", 0x2001))
+    assert usb and code == "RC=0x2001" and "USB 可能中斷" in detail and "RC=0x2001" in detail
+    for rc in (0x2003, 0x2008, 0x1005):  # 未知碼：照實寫「意思待查」，不猜 USB
+        code, detail, usb = wm.rangefinder_read_error(LKIFError("Read failed", rc))
+        assert not usb and f"RC=0x{rc:04X}" in detail and "意思待查" in detail and "USB 可能" not in detail
+        assert "不是 USB" not in detail and "可不處理" not in detail
     code, detail, usb = wm.rangefinder_read_error(ValueError("boom"))
     assert not usb and code == "ValueError" and "USB" not in detail
     for status, (_, text) in wm.RANGEFINDER_STATUS_DIAG.items():
@@ -359,7 +362,9 @@ def test_61657_wording():
     msg = ctl.alarm_message({"code": 61657, "text": "電源溫度警告", "raw": "Mod=2:Overtemp warn,4512",
                              "level": "warning"})
     assert "電源溫度警告（原文：Mod=2:Overtemp warn,4512）" in msg
-    assert "過溫" not in msg and "過熱" not in msg and "風扇" in msg
+    assert "過溫" not in msg and "過熱" not in msg
+    from truplasma_package.protocol import ALARM_ADVICE
+    assert "風扇" in ALARM_ADVICE[61657] and "過溫" not in ALARM_ADVICE[61657]
     from truplasma_package.protocol import ALARM_TEXT
     assert ALARM_TEXT[61657] == "電源溫度警告"
 
@@ -368,3 +373,39 @@ def test_card_detail_has_no_sensor_name_prefix():
     assert wm.MonitorService._disabled_detail("距離", "LK-G5000 未連線：檢查 USB 線") == "LK-G5000 未連線：檢查 USB 線"
     assert wm.split_detail("短現象：原因：再細分") == ("短現象", "原因：再細分")
     assert wm.split_detail("沒有冒號") == ("沒有冒號", "")
+
+
+def test_psu_raw_change_and_clear_are_logged_quietly(psu_rig, records):
+    c, sim, events = psu_rig
+    sim.set_message(61657, "Mod=2:Overtemp warn,4512")
+    assert wait_for(lambda: c.alarm and c.alarm["raw"].endswith("4512"))
+    sim.set_message(61711, TEST_VERSION_TEXT)
+    assert wait_for(lambda: c.alarm and c.alarm["code"] == 61711)
+    sim.set_message(61657, "Mod=2:Overtemp warn,4530")
+    assert wait_for(lambda: any("4530" in m for _, m in events))
+    sim.set_message(61714, TEST_VERSION_TEXT.replace("Mod=0", "Mod=1"), "alarm")
+    assert wait_for(lambda: any("Mod=1" in m for _, m in events))
+    sim.set_message(0, "")
+    assert wait_for(lambda: any("已消失" in m for _, m in events))
+    assert [lv for lv, m in events if "61657" in m and "原文更新" not in m and "已消失" not in m] == ["warning"]
+    assert all(lv == "quiet" for lv, m in events if "原文更新" in m or "已消失" in m or "Test version" in m)
+    advice = [r for r in records.rows if r[1] == wm.SRC_SYSTEM and "61657" in r[2] and "風扇" in r[2]]
+    assert advice, "advice belongs in the controller's log line"
+    assert not [m for _, m in events if "風扇" in m], "notice text stays short"
+
+
+def test_alarm_output_drop_has_alarm_level(psu_rig):
+    c, sim, events = psu_rig
+    c.set_setpoints(200, 2, 1)
+    c.power_on()
+    assert wait_for(lambda: c.phase == ctl.ON)
+    sim.set_message(61624, "Mod=0: Short circuit", "alarm")
+    assert wait_for(lambda: any("61624" in m for _, m in events))
+    drop = [lv for lv, m in events if "輸出已關閉" in m]
+    assert drop and drop[0] == "error"
+
+
+def test_confirmed_failure_counts_from_its_real_start():
+    tr = wm.FailureTracker()
+    assert tr.fail(100.0, wm.R_NO_DATA, "全為 0", False, "x", confirmed=True, since=97.0) == "escalate"
+    assert tr.ok(102.0)[1]["duration"] == 5.0

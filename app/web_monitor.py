@@ -59,7 +59,7 @@ import pyaudio  # noqa: E402
 from flask import Flask, Response, jsonify, redirect, render_template, request  # noqa: E402
 
 from rangefinder import LKIF2Device  # noqa: E402
-from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK, rc_text  # noqa: E402
+from rangefinder.constants import FLOAT_RESULT, LKIF_ABLEMODE_AUTO, RC_CODES, RC_OK, rc_text  # noqa: E402
 from rangefinder.core import LKIFError  # noqa: E402
 import chunked_spectrogram  # noqa: E402
 import history  # noqa: E402
@@ -211,10 +211,11 @@ class FailureTracker:
     def escalated(self):
         return bool(self.ep and self.ep["escalated"])
 
-    def fail(self, now, reason, code, comm, detail, confirmed=False):
+    def fail(self, now, reason, code, comm, detail, confirmed=False, since=None):
+        """since：呼叫端已知的失敗起點（例如音訊全 0 從 3 秒前開始），新的失敗期從那時算起。"""
         ep = self.ep
         if ep is None:
-            ep = self.ep = {"start": now, "fails": 0, "codes": collections.Counter(), "seq": [], "reason": reason,
+            ep = self.ep = {"start": since or now, "fails": 0, "codes": collections.Counter(), "seq": [], "reason": reason,
                             "comm": comm, "detail": detail, "escalated": False, "next_summary": 0.0}
         changed = reason != ep["reason"]
         ep["fails"] += 1
@@ -488,16 +489,23 @@ RANGEFINDER_STATUS_DIAG = {
 }
 
 
+# 確定是通訊層錯誤的 RC 碼（對照表裡的裝置類錯誤）。0x2003、0x2008 等未知碼意思待查 LKIF2.h，不算確定
+RANGEFINDER_COMM_RC = {0x2000, 0x2001}
+
+
 def rangefinder_read_error(exc):
-    """讀值函式丟出的例外 → (code, detail, 是否通訊層錯誤)。「USB 可能中斷」只用在 RC 0x2xxx
-    （與 0x2000 Open Device Failed、0x2001 Device Not Opened 同一組的裝置／通訊類錯誤），並附錯誤碼。"""
+    """讀值函式丟出的例外 → (code, detail, 是否確定為通訊層錯誤)。「USB 可能中斷」只用在 RANGEFINDER_COMM_RC，
+    並附錯誤碼；未知碼照實寫「意思待查」，不猜原因。"""
     if isinstance(exc, LKIFError):
         code = f"RC=0x{exc.rc:04X}"
-        if 0x2000 <= exc.rc <= 0x2FFF:
+        if exc.rc in RANGEFINDER_COMM_RC:
             return code, (f"讀值函式回傳通訊層錯誤 {code}（{rc_text(exc.rc)}）：USB 可能中斷；"
-                          "檢查 USB 線與控制器電源。短暫出現後自動恢復可不處理"), True
-        return code, (f"控制器回報錯誤 {code}（{rc_text(exc.rc)}）：不是 USB 中斷；"
-                      "持續出現時確認控制器設定，或停止後重新開始量測"), False
+                          "檢查 USB 線與控制器電源"), True
+        if exc.rc in RC_CODES:
+            return code, (f"控制器回報錯誤 {code}（{rc_text(exc.rc)}）：持續出現時確認控制器設定，"
+                          "或停止後重新開始量測"), False
+        return code, (f"讀值失敗 {code}（{rc_text(exc.rc)}，意思待查 KEYENCE LKIF2.h）："
+                      "持續出現時檢查 USB 線、控制器電源與設定"), False
     return type(exc).__name__, (f"讀值時發生程式例外（{type(exc).__name__}: {exc}）：不是儀器回報的錯誤碼；"
                                 "持續發生時 traceback 會寫進實驗 log"), False
 
@@ -1058,14 +1066,15 @@ class MonitorService:
         if push:
             self.push_state()
 
-    def sensor_failed(self, key, reason, detail, code, comm=False, exc=None, confirmed=False, text=None, push=True):
+    def sensor_failed(self, key, reason, detail, code, comm=False, exc=None, confirmed=False, text=None, push=True,
+                      since=None):
         """一次讀值失敗。code 是儀器回報的原始代碼（測距儀 ALARM、RC=0x2003…），用來統計分布；
         comm=True 表示通訊層錯誤（升級時記 ERROR，否則 WARN）。回傳是否已升級為真故障。
         升級前狀態卡顯示「讀取失敗」，升級後顯示 text（預設「通訊中斷」／「沒有有效值」）。"""
         now = time.time()
         with self.lock:
             tr = self._tracker(key)
-            action = tr.fail(now, reason, code, comm, detail, confirmed)
+            action = tr.fail(now, reason, code, comm, detail, confirmed, since)
             ep = tr.ep
             escalated = ep["escalated"]
             s = self.sensors[key]
@@ -1095,10 +1104,11 @@ class MonitorService:
                 first_tb = sig is not None and sig not in tr.tb_logged
                 if first_tb:
                     tr.tb_logged.add(sig)
-            slog(level, name, f"持續失敗（已跳通知）：{ep['detail']}（連續 {ep['fails']} 次、{dur:.1f} 秒；{dist}）",
+            count = f"連續 {ep['fails']} 次、" if ep["fails"] > 1 else ""  # 呼叫端確認的（音訊全 0）只有時間
+            slog(level, name, f"持續失敗（已跳通知）：{ep['detail']}（{count}已 {dur:.1f} 秒；{dist}）",
                  exc if first_tb else None)
             self.notify("error" if level == ERROR else "warning", f"{name}異常",
-                        f"{name}：{summary}，已連續失敗 {ep['fails']} 次、{dur:.0f} 秒，持續重試中（原因與建議見狀態卡）",
+                        f"{name}：{summary}，{count}已 {dur:.0f} 秒，持續重試中（原因與建議見狀態卡）",
                         src=name, log=False)
             if rec:
                 rec.add_event("escalated", name, ep["detail"], fails=ep["fails"], seconds=round(dur, 1),
@@ -1418,8 +1428,9 @@ class MonitorService:
                  for k, (r, d) in diag.items()]
         lines += [(WARN, SRC_SYSTEM, "預檢警告：" + w.lstrip("• ")) for w in sys_warnings]
         lines += [(ERROR, SRC_SYSTEM, "預檢錯誤：" + e) for e in errors]
-        lines.append((INFO if not errors else ERROR, SRC_SYSTEM,
-                      f"預檢結果：{'通過' if not errors else '未通過'}（啟用 "
+        off = "、".join(SENSOR_NAMES[k] for k in enabled if not enabled[k])
+        lines.append((ERROR if errors else WARN if off else INFO, SRC_SYSTEM,
+                      f"預檢結果：{'未通過' if errors else '通過，但停用 ' + off if off else '通過'}（啟用 "
                       f"{'、'.join(SENSOR_NAMES[k] for k in enabled if enabled[k]) or '無'}；警告 {len(warnings)} 項）"))
         # 網頁先呼叫 /api/preflight、確認後 /api/start 再檢查一次：結果相同就只記第一次
         now = time.time()
@@ -2086,7 +2097,8 @@ class MonitorService:
                             self.zero_warned = True
                             self.sensor_failed("audio", R_NO_DATA, "連續 3 秒錄到的訊號全為 0："
                                                "麥克風權限未開、設備靜音或未接；檢查 Windows 隱私權設定與麥克風開關",
-                                               code="全為 0", confirmed=True, text="訊號全為 0")
+                                               code="全為 0", confirmed=True, text="訊號全為 0",
+                                               since=time.time() - zero_seconds)
                         elif zero_seconds == 0 and (self.zero_warned or failing):
                             self.zero_warned = failing = False
                             self.set_sensor("audio", text="錄音中", level="ok")
@@ -2205,7 +2217,9 @@ class MonitorService:
                         status = d["FloatResult"]
                         code = f"Unknown({d['RawStatus']})" if status == "Unknown" else status
                         log(code)
-                        recorder.note_code("距離", code, value=d["RawStatus"], text="FloatResult")
+                        recorder.note_code("距離", code, value=d["RawStatus"], level="warning",
+                                           text=f"FloatResult {d['RawStatus']}（{FLOAT_RESULT.get(d['RawStatus'], 'Unknown')}）："
+                                                + split_detail(RANGEFINDER_STATUS_DIAG.get(status, (None, "量測值無效"))[1])[0])
                         self.add_series_point("distance", None)
                         reason, detail = RANGEFINDER_STATUS_DIAG.get(
                             status, (R_ERROR, f"量測值無效（{status}）：檢查目標表面與感測頭設定"))
