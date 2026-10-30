@@ -84,6 +84,12 @@ NFFT = 256
 NOVERLAP = 128
 HOP = NFFT - NOVERLAP
 MAX_FAILURES = 10
+# 暫時失誤 vs 真故障（FailureTracker）：連續失敗達 ESCALATE_FAILS 次「且」持續至少 ESCALATE_S 秒才升級為真故障
+# （WARN／ERROR＋通知）；之前只計數，恢復時寫一行 INFO。每 LOG_SUMMARY_S 秒最多逐筆寫 TRANSIENT_LOG_MAX 行短暫失誤。
+ESCALATE_FAILS = MAX_FAILURES
+ESCALATE_S = 5.0
+TRANSIENT_LOG_MAX = 5
+EVENTS_MAX = 500                # experiment JSON 的 events 筆數上限
 # 溫度計校正（2026-10-22，TX-600N T1 套熱縮套，燒杯對玻璃溫度計，24 °C 與 38 °C 兩點線性擬合，殘差 ≤ 0.06 °C）：
 # 真實 = GAIN × 讀值 + OFFSET。只在 24~38 °C 驗證過，超出範圍是外插。模擬資料不套用。
 # 原始資料：Sensor_Data/calibration/tx600n_sleeve_20261022_*.csv
@@ -170,6 +176,105 @@ REASON_LABELS = {
 # 並在 self.sensors / _reset_sensor_display 加同名 key；前端狀態面板的 sensors 缺少該 key 時會顯示「未接入」。
 SENSOR_NAMES = {"temp": "溫度", "audio": "音訊", "distance": "距離", "spectrometer": "光譜儀"}
 SRC_SYSTEM = "系統"
+
+
+def split_detail(detail):
+    """「短現象：原因與建議」→ (短現象, 原因與建議)；沒有冒號時整段都是短現象。"""
+    head, sep, tail = (detail or "").partition("：")
+    return (head, tail) if sep else (detail or "", "")
+
+
+class FailureTracker:
+    """一個感測器（或電源通訊）的失敗紀錄，用來分開暫時失誤和真故障。
+
+    「失敗期」從第一次失敗開始，到下一次成功結束。連續失敗達 ESCALATE_FAILS 次且持續至少 ESCALATE_S 秒
+    （或呼叫端已自行確認，例如音訊連續 3 秒全 0）才升級；升級前只計數，不寫 WARN、不通知。
+    fail()／ok() 回傳要寫的事件，實際寫 log／通知由 MonitorService 做。呼叫端負責加鎖。
+    """
+
+    def __init__(self):
+        self.ep = None              # 目前的失敗期
+        self.last_ok = None
+        self.transients = 0         # 本次實驗短暫失誤的段數、總失敗筆數、最長持續、錯誤碼分布
+        self.transient_fails = 0
+        self.transient_longest = 0.0
+        self.transient_codes = collections.Counter()
+        self.escalations = 0
+        self.window_end = 0.0       # 短暫失誤逐筆 log 的節流視窗
+        self.window_logged = 0
+        self.suppressed_n = 0       # 視窗內未逐筆寫的短暫失誤段數與錯誤碼分布
+        self.suppressed = collections.Counter()
+        self.tb_logged = set()      # 已寫過 traceback 的例外（同一種只寫一次）
+
+    @property
+    def escalated(self):
+        return bool(self.ep and self.ep["escalated"])
+
+    def fail(self, now, reason, code, comm, detail, confirmed=False):
+        ep = self.ep
+        if ep is None:
+            ep = self.ep = {"start": now, "fails": 0, "codes": collections.Counter(), "seq": [], "reason": reason,
+                            "comm": comm, "detail": detail, "escalated": False, "next_summary": 0.0}
+        changed = reason != ep["reason"]
+        ep["fails"] += 1
+        ep["codes"][code] += 1
+        if (not ep["seq"] or ep["seq"][-1] != code) and len(ep["seq"]) < 8:
+            ep["seq"].append(code)
+        ep.update(reason=reason, comm=comm, detail=detail, last_code=code)
+        if not ep["escalated"]:
+            if confirmed or (ep["fails"] >= ESCALATE_FAILS and now - ep["start"] >= ESCALATE_S):
+                ep["escalated"] = True
+                ep["next_summary"] = now + LOG_SUMMARY_S
+                self.escalations += 1
+                return "escalate"
+            return None
+        if changed:
+            return "change"
+        if now >= ep["next_summary"]:
+            ep["next_summary"] = now + LOG_SUMMARY_S
+            return "summary"
+        return None
+
+    def ok(self, now):
+        """成功一次：回傳 (事件, 失敗期) 或 None。事件是 "recover"（真故障恢復）或 "transient"（短暫失誤）。"""
+        ep, self.ep = self.ep, None
+        self.last_ok = now
+        if ep is None:
+            return None
+        ep["duration"] = now - ep["start"]
+        if ep["escalated"]:
+            return "recover", ep
+        self.transients += 1
+        self.transient_fails += ep["fails"]
+        self.transient_longest = max(self.transient_longest, ep["duration"])
+        self.transient_codes.update(ep["codes"])
+        return "transient", ep
+
+    def transient_logged(self, now, ep):
+        """短暫失誤要不要逐筆寫：每 LOG_SUMMARY_S 秒最多 TRANSIENT_LOG_MAX 行，其餘併成一行摘要。
+        回傳 (要不要寫這一行, 上一個視窗被省略的錯誤碼分布或 None)。"""
+        flushed = None
+        if now >= self.window_end:
+            flushed = self.flush_suppressed()
+            self.window_end, self.window_logged = now + LOG_SUMMARY_S, 0
+        if self.window_logged < TRANSIENT_LOG_MAX:
+            self.window_logged += 1
+            return True, flushed
+        self.suppressed_n += 1
+        self.suppressed.update(ep["codes"])
+        return False, flushed
+
+    def flush_suppressed(self):
+        """取出被省略的短暫失誤 (段數, 錯誤碼分布)；沒有時回傳 None。"""
+        if not self.suppressed_n:
+            return None
+        out = (self.suppressed_n, self.suppressed)
+        self.suppressed_n, self.suppressed = 0, collections.Counter()
+        return out
+
+    @staticmethod
+    def dist(codes):
+        return "、".join(f"{c} {n}" for c, n in codes.most_common())
 # 電源供應器（TruPlasma）不是實驗啟動時才開的感測器，不放進 SENSOR_NAMES（那裡的 key 會被拿去對 enabled / sensors 取值）
 PSU_NAME = "電源"
 PSU_DEFAULT_PORT = "COM8"
@@ -663,6 +768,15 @@ class ExperimentRecorder:
             self.errors.append({"time": iso_now(), "message": msg})
         self.write_json()
 
+    def add_event(self, kind, source, message, **fields):
+        """感測器／電源的重要事件（升級為真故障、恢復）寫進 JSON 的 events（最多 EVENTS_MAX 筆）。"""
+        with self.lock:
+            events = self.info.setdefault("events", [])
+            if len(events) >= EVENTS_MAX:
+                return
+            events.append({"time": iso_now(), "kind": kind, "source": source, "message": message, **fields})
+        self.write_json()
+
     def note_code(self, source, code, value=None, text="", raw=None, level=None):
         """儀器回報的原始代碼（測距儀 RC 碼／FloatResult、電源警報碼）照實記進 JSON 的 device_codes：
         每個 (來源, 代碼) 一筆，含數值、程式的翻譯、儀器原文、次數與首末時間。
@@ -824,15 +938,17 @@ class MonitorService:
                 except queue.Full:
                     pass
 
-    def notify(self, level, title, message, src=SRC_SYSTEM):
-        """取代 messagebox：level = info | warning | error | success。同時寫進 log（src 為來源欄）。"""
+    def notify(self, level, title, message, src=SRC_SYSTEM, log=True):
+        """取代 messagebox：level = info | warning | error | success。同時寫進 log（src 為來源欄）；
+        log=False 用在呼叫端已經寫了一行更完整的 log（並註明已通知）的情況，避免同一件事寫兩行。"""
         with self.lock:
             self.notice_seq += 1
             notice = {"id": self.notice_seq, "level": level, "title": title,
                       "message": message, "time": time.time()}
             self.notices.append(notice)
-        slog({"warning": WARN, "error": ERROR}.get(level, INFO), src,
-             f"網頁通知 [{title}] {message.replace(chr(10), ' / ')}")
+        if log:
+            slog({"warning": WARN, "error": ERROR}.get(level, INFO), src,
+                 f"網頁通知 [{title}] {message.replace(chr(10), ' / ')}")
         self.publish("toast", notice)
 
     def push_state(self):
@@ -875,75 +991,153 @@ class MonitorService:
         self._track = {}
         self._pf_shown = set()
 
-    def _track_sensor(self, key, s):
-        """依 set_sensor 後的狀態寫 log（呼叫時已持有 self.lock）。
-
-        節流：只在 (原因, 等級) 改變時寫一行「狀態變化」；同一原因持續失敗每 LOG_SUMMARY_S 秒補一行摘要；
-        回到正常時寫失敗持續秒數與期間失敗次數。ok 狀態下重複呼叫（音訊每秒刷新 last_ok）不寫。
-        """
-        now = time.time()
-        t = self._track.setdefault(key, {"reason": None, "level": None, "desc": "初始化中", "fail_start": None,
-                                         "fails": 0, "next_summary": 0.0, "last_exc": None})
-        name = SENSOR_NAMES.get(key, key)
-        reason, level = s["reason"], s["level"]
-        if reason in NON_FAILURE_REASONS:
-            if reason == R_OK:
-                if t["fail_start"] is not None:
-                    slog(INFO, name, f"恢復正常（失敗持續 {now - t['fail_start']:.1f} 秒，期間失敗 {t['fails']} 次）")
-                    t["fail_start"], t["fails"], t["last_exc"] = None, 0, None
-                elif t["reason"] != R_OK:
-                    slog(INFO, name, f"狀態：正常（原先為{t['desc']}）")
-            t["desc"] = REASON_LABELS.get(reason, reason)
-        else:
-            t["fails"] = s["fail_count"]
-            if t["fail_start"] is None:
-                t["fail_start"] = now
-            desc = REASON_LABELS.get(reason, reason) + ("（已判定斷線）" if level == "error" and t["level"] == "warn" else "")
-            if (reason, level) != (t["reason"], t["level"]):
-                slog(ERROR if level == "error" or reason in (R_DRIVER, R_NOT_FOUND, R_ERROR) else WARN, name,
-                     f"狀態變化：{t['desc']} → {desc} [{reason}] {s['detail']}")
-                t["desc"], t["next_summary"] = desc, now + LOG_SUMMARY_S
-            elif now >= t["next_summary"]:
-                slog(WARN, name, f"仍在失敗 [{reason}]：累計 {t['fails']} 次，已持續 {now - t['fail_start']:.0f} 秒；{s['detail']}")
-                t["next_summary"] = now + LOG_SUMMARY_S
-        t["reason"], t["level"] = reason, level
+    def _tracker(self, key):
+        """呼叫時已持有 self.lock。"""
+        tr = self._track.get(key)
+        if tr is None:
+            tr = self._track[key] = FailureTracker()
+        return tr
 
     def _log_exception_once(self, key, exc, what):
-        """讀取迴圈的例外：同一種例外訊息只寫一次完整 traceback（恢復後重新計算），避免逐筆洗版。"""
+        """電源資料處理等非讀值迴圈的例外：同一種例外訊息只寫一次完整 traceback，避免逐筆洗版。"""
         sig = f"{type(exc).__name__}: {exc}"
         with self.lock:
-            t = self._track.setdefault(key, {"reason": None, "level": None, "desc": "初始化中", "fail_start": None,
-                                             "fails": 0, "next_summary": 0.0, "last_exc": None})
-            if t["last_exc"] == sig:
+            tr = self._tracker(key)
+            if sig in tr.tb_logged:
                 return
-            t["last_exc"] = sig
+            tr.tb_logged.add(sig)
         slog(ERROR, SENSOR_NAMES.get(key, key), f"{what}: {sig}", exc)
 
     def set_sensor(self, key, text=None, value=None, level=None, push=True, reason=None, detail=None):
-        """更新單一感測器。level=="ok" 自動視為正常（reason=ok、記錄 last_ok、清除失敗計數）；
-        否則帶 reason 的呼叫會記錄原因／說明，並在 reason 屬於失敗類時 fail_count+1
-        （idle/init/ok/disabled/stopped 不算失敗）。不帶 reason 的呼叫不動這幾個欄位。
-        狀態改變時順便寫 log（_track_sensor）。"""
+        """更新單一感測器。level=="ok" 自動視為正常（reason=ok、記錄 last_ok、清除失敗計數），
+        並結束目前的失敗期（寫恢復或短暫失誤的 log）；否則帶 reason 的呼叫只記錄原因／說明
+        （初始化失敗等終止性錯誤，由呼叫端自己寫 log）。讀值失敗請用 sensor_failed。"""
+        event = None
         with self.lock:
             s = self.sensors[key]
+            prev = s["reason"]
             if text is not None:
                 s["text"] = text
             s["value"] = value if key != "audio" else s.get("value")
             if level is not None:
                 s["level"] = level
             if level == "ok":
-                s.update(reason=R_OK, detail="", last_ok=time.time(), fail_count=0)
+                s.update(reason=R_OK, detail="", summary="", last_ok=time.time(), fail_count=0)
                 self._pf_shown.discard(key)
+                event = self._tracker(key).ok(time.time())
+                if event is None and prev != R_OK:
+                    slog(INFO, SENSOR_NAMES.get(key, key), f"狀態：正常（原先為{REASON_LABELS.get(prev, prev)}）")
             elif reason is not None:
                 s["reason"] = reason
                 s["detail"] = detail or ""
+                s["summary"] = split_detail(detail)[0]
                 if reason not in NON_FAILURE_REASONS:
                     s["fail_count"] += 1
                 self._pf_shown.discard(key)
-            if level == "ok" or reason is not None:
-                self._track_sensor(key, s)
+        if event:
+            self._failure_event(key, SENSOR_NAMES.get(key, key), *event)
         if push:
             self.push_state()
+
+    def sensor_failed(self, key, reason, detail, code, comm=False, exc=None, confirmed=False, text=None, push=True):
+        """一次讀值失敗。code 是儀器回報的原始代碼（測距儀 ALARM、RC=0x2003…），用來統計分布；
+        comm=True 表示通訊層錯誤（升級時記 ERROR，否則 WARN）。回傳是否已升級為真故障。
+        升級前狀態卡顯示「讀取失敗」，升級後顯示 text（預設「通訊中斷」／「沒有有效值」）。"""
+        now = time.time()
+        with self.lock:
+            tr = self._tracker(key)
+            action = tr.fail(now, reason, code, comm, detail, confirmed)
+            ep = tr.ep
+            escalated = ep["escalated"]
+            s = self.sensors[key]
+            s.update(value=None, reason=reason, detail=detail or "", summary=split_detail(detail)[0],
+                     fail_count=ep["fails"], level="error" if escalated else "warn",
+                     text=(text or ("通訊中斷" if comm else "沒有有效值")) if escalated else "讀取失敗")
+            self._pf_shown.discard(key)
+        if action:
+            self._failure_event(key, SENSOR_NAMES.get(key, key), action, ep, exc)
+        if push:
+            self.push_state()
+        return escalated
+
+    def _failure_event(self, key, name, action, ep, exc=None):
+        """FailureTracker 回傳的事件：寫 log、通知、實驗 JSON。不可在持有 self.lock 時呼叫。"""
+        now = time.time()
+        with self.lock:
+            tr = self._tracker(key)
+            rec = self.recorder if self.phase == "running" else None
+            last_ok = tr.last_ok
+        dur = ep.get("duration", now - ep["start"])
+        dist = FailureTracker.dist(ep["codes"])
+        summary, _ = split_detail(ep["detail"])
+        level = ERROR if ep["comm"] else WARN
+        if action == "escalate":
+            sig = f"{type(exc).__name__}: {exc}" if exc is not None else None
+            with self.lock:
+                first_tb = sig is not None and sig not in tr.tb_logged
+                if first_tb:
+                    tr.tb_logged.add(sig)
+            slog(level, name, f"持續失敗（已跳通知）：{ep['detail']}（連續 {ep['fails']} 次、{dur:.1f} 秒；{dist}）",
+                 exc if first_tb else None)
+            self.notify("error" if level == ERROR else "warning", f"{name}異常",
+                        f"{name}：{summary}，已連續失敗 {ep['fails']} 次、{dur:.0f} 秒，持續重試中（原因與建議見狀態卡）",
+                        src=name, log=False)
+            if rec:
+                rec.add_event("escalated", name, ep["detail"], fails=ep["fails"], seconds=round(dur, 1),
+                              codes=dict(ep["codes"]), reason=ep["reason"])
+        elif action == "change":
+            slog(level, name, f"失敗原因改變：{ep['detail']}（本段已 {ep['fails']} 次、{dur:.0f} 秒；{dist}）")
+        elif action == "summary":
+            ok_text = time.strftime("%H:%M:%S", time.localtime(last_ok)) if last_ok else "本次尚未成功"
+            slog(level, name, f"仍在失敗：累計 {ep['fails']} 次，已持續 {dur:.0f} 秒（{dist}）；"
+                 f"最後成功 {ok_text}；{ep['detail']}")
+        elif action == "recover":
+            slog(INFO, name, f"恢復正常（已跳通知）：失敗 {ep['fails']} 次、持續 {dur:.1f} 秒（{dist}）")
+            self.notify("info", f"{name}已恢復", f"{name}已恢復正常（失敗 {ep['fails']} 次、持續 {dur:.0f} 秒）",
+                        src=name, log=False)
+            if rec:
+                rec.add_event("recovered", name, f"恢復正常：失敗 {ep['fails']} 次、持續 {dur:.1f} 秒",
+                              fails=ep["fails"], seconds=round(dur, 1), codes=dict(ep["codes"]))
+        elif action == "transient":
+            with self.lock:
+                write, flushed = tr.transient_logged(now, ep)
+                n = tr.transients
+            if flushed:
+                slog(INFO, name, f"過去 {LOG_SUMMARY_S} 秒另有 {flushed[0]} 次短暫失誤未逐筆記錄"
+                     f"（{FailureTracker.dist(flushed[1])}）")
+            if write:
+                slog(INFO, name, f"短暫讀取失敗 {ep['fails']} 次、{dur:.1f} 秒後恢復（{'→'.join(ep['seq'])}）："
+                     f"{summary}；本次第 {n} 次短暫失誤，未通知")
+
+    def _failure_summaries(self, end_ts):
+        """停止時：每個感測器（與電源通訊）仍在失敗的寫一行，短暫失誤彙總寫一行；回傳寫進 JSON 的摘要。"""
+        out = {}
+        with self.lock:
+            items = [(PSU_NAME if k == "psu" else SENSOR_NAMES.get(k, k), tr) for k, tr in self._track.items()]
+        for name, tr in items:
+            with self.lock:
+                ep, flushed = tr.ep, tr.flush_suppressed()
+            if flushed:
+                slog(INFO, name, f"另有 {flushed[0]} 次短暫失誤未逐筆記錄（{FailureTracker.dist(flushed[1])}）")
+            entry = {}
+            if ep is not None:
+                dur = end_ts - ep["start"]
+                slog(WARN if ep["escalated"] else INFO, name,
+                     f"停止時仍在失敗：持續 {dur:.1f} 秒，累計 {ep['fails']} 次（{FailureTracker.dist(ep['codes'])}）；"
+                     f"{ep['detail']}")
+                entry["failing_at_stop"] = {"seconds": round(dur, 1), "fails": ep["fails"],
+                                            "escalated": ep["escalated"], "codes": dict(ep["codes"]),
+                                            "detail": ep["detail"]}
+            if tr.transients:
+                slog(INFO, name, f"短暫失誤彙總：{tr.transients} 次（共 {tr.transient_fails} 筆失敗），"
+                     f"最長持續 {tr.transient_longest:.1f} 秒；錯誤碼 {FailureTracker.dist(tr.transient_codes)}")
+                entry["transient"] = {"count": tr.transients, "fails": tr.transient_fails,
+                                      "longest_s": round(tr.transient_longest, 2), "codes": dict(tr.transient_codes)}
+            if tr.escalations:
+                entry["escalations"] = tr.escalations
+            if entry:
+                out[name] = entry
+        return out
 
     def audio_meta(self):
         sr = self.sample_rate
@@ -1471,9 +1665,30 @@ class MonitorService:
         """controller thread 每輪呼叫：推 SSE，實驗錄製中再寫 CSV 與曲線。不可丟例外、不可卡住。"""
         try:
             self.publish("psu", snap)
+            self._psu_track_comm(snap)
             self._psu_record(snap)
         except Exception as e:  # noqa: BLE001
             self._log_exception_once("psu", e, "電源資料處理錯誤")
+
+    def _psu_track_comm(self, snap):
+        """電源通訊的暫時失誤／真故障（同感測器的 FailureTracker）：heartbeat 沒回應時每輪記一次失敗。
+        輸出開著時連續 3 次失敗由 controller 自己關輸出並通知；這裡補上輸出關閉時也會發生的長時間無回應。"""
+        event = None
+        with self.lock:
+            tr = self._tracker("psu")
+            if not snap.get("connected"):
+                tr.ep = None  # 斷線由 controller 的「電源連線中斷」事件回報
+                return
+            now = time.time()
+            if snap.get("fail_count"):
+                detail = f"電源沒有回應 heartbeat（{snap.get('error') or '逾時'}）：確認電源開機、RS232/USB 轉接線"
+                action = tr.fail(now, R_NO_DATA, snap.get("error") or "逾時", True, detail)
+                if action:
+                    event = (action, tr.ep)
+            else:
+                event = tr.ok(now)
+        if event:
+            self._failure_event("psu", PSU_NAME, *event)
 
     def _psu_record(self, snap):
         st = snap.get("status")
@@ -1641,12 +1856,9 @@ class MonitorService:
         messages = [f"資料夾: {recorder.rel_dir()}"]
         summary = {f["key"]: f for f in recorder.summary()["files"]}
         slog(INFO, SRC_SYSTEM, f"原始資料已關檔，實際時長 {end_ts - start_ts:.1f} 秒")
-        with self.lock:
-            for key, t in self._track.items():  # 停止時仍在失敗的感測器：留下最後的原因
-                if t["fail_start"] is not None:
-                    s = self.sensors[key]
-                    slog(WARN, SENSOR_NAMES.get(key, key), f"停止時仍在失敗 [{s['reason']}]："
-                         f"持續 {end_ts - t['fail_start']:.1f} 秒，累計 {t['fails']} 次；{s['detail']}")
+        failures = self._failure_summaries(end_ts)  # 停止時仍在失敗的留下最後原因；短暫失誤彙總成一行
+        if failures:
+            recorder.update(failure_summary=failures)
         for csv_key, label in (("temperature", "溫度"), ("distance", "距離"), ("spectrometer", "光譜儀")):
             if csv_key in summary:
                 f = summary[csv_key]
@@ -1745,8 +1957,6 @@ class MonitorService:
 
     def _temp_worker(self, stop_event, com_port, recorder):
         """對應 main_csv.start_temperature_monitoring（每 1 秒一次）；每筆讀值（含失敗）寫入 temperature CSV。"""
-        consecutive_failures = 0
-        disconnected = False
         read_tx = self.sim_temp.read_tx600n if "temp" in self.simulated else read_tx600n_diag
 
         def read_temp(port):
@@ -1774,10 +1984,6 @@ class MonitorService:
                 try:
                     temp, reason, detail = read_temp(com_port)
                     if temp is not None:
-                        consecutive_failures = 0
-                        if disconnected:
-                            disconnected = False
-                            self.notify("info", "通知", "溫度感測器已重新連接", src="溫度")
                         raw = temp
                         if calibrate:
                             temp = TEMP_CAL_GAIN * float(raw) + TEMP_CAL_OFFSET
@@ -1785,33 +1991,16 @@ class MonitorService:
                         self.add_series_point("temp", round(float(temp), 2))
                         self.set_sensor("temp", text=f"{temp:.1f} °C", value=round(float(temp), 1), level="ok")
                     else:
-                        consecutive_failures += 1
-                        if consecutive_failures >= MAX_FAILURES and not disconnected:
-                            disconnected = True
-                            self.notify("warning", "警告", "溫度感測器可能已斷線，監測將繼續但不會讀取溫度數據",
-                                        src="溫度")
-                        if disconnected:
-                            log(None, "感測器斷線")
-                            self.add_series_point("temp", None)
-                            self.set_sensor("temp", text="感測器斷線", value=None, level="error",
-                                            reason=reason, detail=detail)
-                        else:
-                            log(None, "讀取失敗")
-                            self.add_series_point("temp", None)
-                            self.set_sensor("temp", text="讀取失敗", value=None, level="warn",
-                                            reason=reason, detail=detail)
+                        escalated = self.sensor_failed("temp", reason, detail, code=reason,
+                                                       comm=reason in (R_BUSY, R_ERROR, R_NOT_FOUND, R_DRIVER))
+                        log(None, "感測器斷線" if escalated else "讀取失敗")
+                        self.add_series_point("temp", None)
                 except Exception as e:  # noqa: BLE001
-                    self._log_exception_once("temp", e, "溫度讀取錯誤")
-                    consecutive_failures += 1
-                    if consecutive_failures == MAX_FAILURES and not disconnected:
-                        disconnected = True
-                        self.notify("warning", "警告", "溫度感測器錯誤，監測將繼續但不會讀取溫度數據",
-                                    src="溫度")
+                    self.sensor_failed("temp", R_ERROR, f"讀取溫度時發生錯誤（{type(e).__name__}: {e}）："
+                                       "第一次升級為持續失敗時，完整 traceback 會寫進實驗 log",
+                                       code=type(e).__name__, comm=True, exc=e)
                     log(None, "連接錯誤")
                     self.add_series_point("temp", None)
-                    self.set_sensor("temp", text="連接錯誤", value=None,
-                                    level="error" if disconnected else "warn",
-                                    reason=R_ERROR, detail="讀取溫度時發生錯誤：詳細內容見實驗 log")
                 stop_event.wait(1)
         except BaseException as e:  # noqa: BLE001  worker 意外死掉也要留下紀錄並關檔
             slog(ERROR, "溫度", f"溫度 worker 異常結束: {e}", e)
@@ -1846,7 +2035,7 @@ class MonitorService:
                  f"WAV audio_{exp_id}.wav")
             self.set_sensor("audio", text=f"錄音中（設備 {audio_rec.device_index}，{audio_rec.channels} 聲道）",
                             level="ok")
-            error_notified = False
+            failing = False  # 錄音例外中（成功一次就回報恢復）
             zero_seconds = 0.0
             last_ok_push = time.time()
 
@@ -1860,33 +2049,24 @@ class MonitorService:
                             zero_seconds += len(chunk) / sample_rate
                         else:
                             zero_seconds = 0.0
-                        if zero_seconds >= 3 and not self.zero_warned:
+                        if zero_seconds >= 3:
+                            # 呼叫端已確認持續 3 秒，直接升級；之後每段都記一次失敗，讓「仍在失敗」摘要能計數
                             self.zero_warned = True
-                            self.notify("warning", "警告", "連續 3 秒錄到的音訊全為 0，"
-                                        "可能是麥克風權限未開啟或設備靜音", src="音訊")
-                            self.set_sensor("audio", text="訊號全為 0", level="warn", reason=R_NO_DATA,
-                                            detail="訊號全為 0：麥克風權限未開、靜音或未接")
-                        elif zero_seconds == 0 and self.zero_warned:
-                            self.zero_warned = False
+                            self.sensor_failed("audio", R_NO_DATA, "訊號全為 0：麥克風權限未開、靜音或未接",
+                                               code="全為 0", confirmed=True, text="訊號全為 0")
+                        elif zero_seconds == 0 and (self.zero_warned or failing):
+                            self.zero_warned = failing = False
                             self.set_sensor("audio", text="錄音中", level="ok")
-                        elif zero_seconds == 0 and not error_notified and time.time() - last_ok_push >= 1:
+                        elif zero_seconds == 0 and time.time() - last_ok_push >= 1:
                             # 正常錄音時每秒刷新一次 last_ok，狀態面板的「最後正常」才不會一直累加
                             last_ok_push = time.time()
                             self.set_sensor("audio", level="ok")
-                    if error_notified:
-                        error_notified = False
-                        self.notify("info", "通知", "音訊設備已恢復正常", src="音訊")
-                        self.set_sensor("audio", text="錄音中", level="ok")
                 except Exception as audio_error:  # noqa: BLE001
-                    self._log_exception_once("audio", audio_error, "音訊錄製錯誤")
-                    if not error_notified:
-                        error_notified = True
-                        recorder.add_error(f"音訊錄製錯誤: {audio_error}")
-                        self.notify("warning", "警告",
-                                    "音訊錄製出現錯誤，監測將繼續但音訊數據可能不完整", src="音訊")
-                    # 每次失敗都更新（累加 fail_count）；text/level 與原本相同
-                    self.set_sensor("audio", text="錄製錯誤", level="warn", reason=R_ERROR,
-                                    detail="錄音過程發生錯誤：詳細內容見實驗 log")
+                    failing = True
+                    self.sensor_failed("audio", R_ERROR,
+                                       f"錄音時發生錯誤（{type(audio_error).__name__}: {audio_error}）："
+                                       "持續發生時 traceback 會寫進實驗 log",
+                                       code=type(audio_error).__name__, comm=True, exc=audio_error, text="錄製錯誤")
                     stop_event.wait(update_interval)
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "音訊", f"音訊監測錯誤: {e}", e)
@@ -1977,8 +2157,6 @@ class MonitorService:
             device.start_measure()
             slog(INFO, "距離", f"開始量測：取樣 {SAMPLING_US} µs，反射模式 {REFL_MODE_LABELS[refl_mode]}，讀取間隔 {interval} 秒")
 
-            consecutive_failures = 0
-            disconnected = False
             while not stop_event.is_set():
                 try:
                     d = device.read_single(OUT_NO)
@@ -1987,45 +2165,27 @@ class MonitorService:
                         absolute = (BASIC_REF + rel) * 1000  # µm
                         log("VALID", rel)
                         self.add_series_point("distance", round(float(absolute), 3))
-                        consecutive_failures = 0
-                        if disconnected:
-                            disconnected = False
-                            self.notify("info", "通知", "測距儀已重新連接", src="距離")
                         self.set_sensor("distance", text=f"{absolute:.1f} µm",
                                         value=round(float(absolute), 1), level="ok")
                     else:
                         status = d["FloatResult"]
-                        log(f"Unknown({d['RawStatus']})" if status == "Unknown" else status)
-                        recorder.note_code("距離", f"Unknown({d['RawStatus']})" if status == "Unknown" else status,
-                                           value=d["RawStatus"], text="FloatResult")
+                        code = f"Unknown({d['RawStatus']})" if status == "Unknown" else status
+                        log(code)
+                        recorder.note_code("距離", code, value=d["RawStatus"], text="FloatResult")
                         self.add_series_point("distance", None)
-                        consecutive_failures += 1
-                        if consecutive_failures >= MAX_FAILURES and not disconnected:
-                            disconnected = True
-                            self.notify("warning", "警告", "測距儀可能已斷線，監測將繼續但不會讀取距離數據",
-                                        src="距離")
                         reason, detail = RANGEFINDER_STATUS_DIAG.get(
                             status, (R_ERROR, f"量測值無效（{status}）：檢查目標表面與感測頭設定"))
-                        if disconnected:
-                            self.set_sensor("distance", text="感測器斷線", value=None, level="error",
-                                            reason=reason, detail=detail)
-                        else:
-                            self.set_sensor("distance", text="讀取失敗", value=None, level="warn",
-                                            reason=reason, detail=detail)
+                        self.sensor_failed("distance", reason, detail, code=code)
                 except Exception as e:  # noqa: BLE001
-                    self._log_exception_once("distance", e, "測距儀讀取錯誤")
                     log(f"ERROR: {e}")
                     if isinstance(e, LKIFError):
-                        recorder.note_code("距離", f"RC=0x{e.rc:04X}", value=e.rc, text=rc_text(e.rc),
-                                           raw=str(e), level="error")
+                        code = f"RC=0x{e.rc:04X}"
+                        recorder.note_code("距離", code, value=e.rc, text=rc_text(e.rc), raw=str(e), level="error")
+                    else:
+                        code = type(e).__name__
                     self.add_series_point("distance", None)
-                    consecutive_failures += 1
-                    if consecutive_failures == MAX_FAILURES and not disconnected:
-                        disconnected = True
-                        self.notify("warning", "警告", "測距儀錯誤，監測將繼續但不會讀取距離數據", src="距離")
-                    self.set_sensor("distance", text="連接錯誤", value=None,
-                                    level="error" if disconnected else "warn",
-                                    reason=R_ERROR, detail="通訊錯誤：USB 可能中斷")
+                    self.sensor_failed("distance", R_ERROR, f"讀值函式錯誤（{e}）：通訊錯誤：USB 可能中斷",
+                                       code=code, comm=True, exc=e)
                 stop_event.wait(interval)
         except BaseException as e:  # noqa: BLE001
             slog(ERROR, "距離", f"測距儀監測錯誤: {e}", e)
@@ -2076,7 +2236,7 @@ class MonitorService:
         """光譜儀：每 interval 秒量測一次；每筆（含失敗）即時寫入 spectrometer CSV。
 
         CSV：第一行 Timestamp,Elapsed(s),Status 後接各像素波長（nm，3 位小數）；之後每筆一列，強度為原始 counts
-        （未扣暗光）。失敗列強度欄留空、Status 寫「原因代碼: 訊息」。連續失敗 MAX_FAILURES 次判定斷線，恢復時通知。
+        （未扣暗光）。失敗列強度欄留空、Status 寫「原因代碼: 訊息」。失敗的升級與恢復通知由 sensor_failed 處理。
         """
         device = None
         n = 0  # 像素數（CSV 欄數）
@@ -2117,33 +2277,21 @@ class MonitorService:
                  f"間隔 {interval} 秒，CSV spectrometer_{exp_id}.csv（{3 + n} 欄）")
             self.set_sensor("spectrometer", text="量測中", level="ok")
 
-            consecutive_failures = 0
-            disconnected = False
             next_run = time.time()
             while not stop_event.is_set():
                 try:
                     counts = device.measure(integration_ms)
                     log(counts, "ok")
                     self._ingest_spectrum(time.time() - self.start_time, counts)
-                    consecutive_failures = 0
-                    if disconnected:
-                        disconnected = False
-                        self.notify("info", "通知", "光譜儀已重新連接", src="光譜儀")
                     peak = int(np.argmax(counts))
                     self.set_sensor("spectrometer", text=f"最強峰 {wl[peak]:.1f} nm", value=round(float(counts[peak]), 1),
                                     level="ok")
                 except Exception as e:  # noqa: BLE001
                     reason, detail = classify_spectrometer_error(e)
-                    self._log_exception_once("spectrometer", e, "光譜儀讀取錯誤")
-                    consecutive_failures += 1
-                    if consecutive_failures >= MAX_FAILURES and not disconnected:
-                        disconnected = True
-                        self.notify("warning", "警告", f"光譜儀可能已斷線（{REASON_LABELS[reason]}），"
-                                    "監測將繼續但不會讀取光譜數據", src="光譜儀")
                     log(None, f"{reason}: {e}")
                     self._ingest_spectrum(time.time() - self.start_time, None)
-                    self.set_sensor("spectrometer", text="感測器斷線" if disconnected else "讀取失敗", value=None,
-                                    level="error" if disconnected else "warn", reason=reason, detail=detail)
+                    self.sensor_failed("spectrometer", reason, f"{detail}（{type(e).__name__}: {e}）",
+                                       code=reason, comm=reason != R_NO_DATA, exc=e)
                 # 以固定節奏量測（量測本身耗時算在間隔內）；落後太多時不補跑，直接從現在重新計時
                 next_run += interval
                 delay = next_run - time.time()
