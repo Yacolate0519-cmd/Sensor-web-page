@@ -39,13 +39,17 @@ Sensor-web-page/
 │   ├── signal_package/        #   音訊錄音、處理、儲存
 │   ├── rangefinder/           #   KEYENCE 測距儀（LKIF2.dll 介接）
 │   ├── spectrum_py_package/   #   AvaSpec 光譜儀
+│   ├── truplasma_package/     #   TRUMPF TruPlasma 電源：RS232 協定、控制器、參數表、模擬器
 │   └── utils/                 #   工具函式
 ├── drivers/                   # 廠商 DLL：LKIF2.dll、CmnLib.dll、KeyUsbDrv.dll、avaspecx64.dll
 │   ├── keyence_usb/           #   測距儀 USB 驅動安裝檔（DPInst_64.exe）
 │   └── avaspec_usb/           #   光譜儀 USB 驅動安裝檔（dpinst.exe）
 ├── legacy/                    # 舊版程式（Tkinter 介面、單一感測器腳本、check_db.py、environment.yml、spectra_logs/）
 ├── launchers/                 # 一鍵啟動器的實際邏輯與圖示（mac/、windows/）
-├── scripts/                   # windows_selfcheck.py 環境自我檢查
+├── scripts/                   # windows_selfcheck.py 環境自我檢查、test_thermometer.py、soak_test.py 長時間穩定測試
+├── tests/                     # pytest 測試（電源驅動、穩定測試腳本）
+├── docs/plans/                # 規劃與研究文件（電源協定整理、控制功能追蹤清單等）
+├── truplasma_logger_backup/   # 實驗室電腦上電源唯讀紀錄器的備份
 ├── pyproject.toml             # 專案定義與相依套件（uv）
 ├── uv.lock                    # 相依套件鎖定檔（請一併提交）
 ├── .python-version            # 指定 Python 版本（3.12）
@@ -202,7 +206,7 @@ uv run python main.py --help       # 所有參數
     - 光譜儀：量測間隔 0.5 秒、積分時間 50 ms。
   - 「輸入實驗標籤」開啟標籤視窗、「停止監測」（存檔期間顯示「儲存中…」）。監測沒有時間上限，一律手動停止。
 - **感測器狀態卡**（溫度／音訊／測距儀／光譜儀）：綠色＝正常、紅色＝警告或錯誤、橘色＝其他（待機、初始化、未啟用等）。卡片顯示原因分類（驅動／韌體問題、找不到裝置、Port 衝突、數據收不進來、接線／訊號異常、超出量程、未啟用、其他錯誤）、可行動的說明、「最後正常 N 秒前」與連續失敗次數。原始例外訊息不顯示在畫面上，請看實驗 log。
-- **圖表**：Spectrogram、Optical Spectrum（熱圖＋即時光譜）、溫度、距離；以 canvas 繪製、跟隨系統深淺色。
+- **圖表**：Spectrogram（聲音頻譜圖）與 Optical Spectrum（光譜，熱圖＋即時光譜）左右並排，下面是 Temperature（溫度）、Distance（距離）、PSU Voltage（電源電壓）、PSU Current (peak)（電源電流峰值）；標題一律「英文（中文）」。以 canvas 繪製、跟隨系統深淺色。兩張電源圖只在實驗錄製中且電源已連線時才有資料。
 - **開始流程**：填好實驗標籤並送出後進行預檢（偵測溫度計 COM 埠、選麥克風、試開測距儀與光譜儀、檢查參數與標籤、檢查磁碟空間）。預檢結果會先顯示在狀態卡上；有警告會跳確認視窗（「繼續監測」／「取消」），有錯誤則無法開始。至少要有一個感測器可用。找不到的感測器會被停用，不影響其他感測器。
 - **通知**：右側跳出 info／success／warning／error 通知（error 需手動關閉）。會通知的情況：感測器連續失敗 10 次判定斷線、恢復連線、音訊連續 3 秒全為 0、寫檔失敗、頻譜 CSV 產生失敗（附補產生指令）、監測完成摘要。所有通知同時寫進 log。
 - **麥克風預設**：音訊裝置清單中第一個名稱含 RØDE／RODE 的輸入裝置，找不到則用第一個輸入裝置（可用 `SENSOR_AUDIO_PREFER` 修改）。Windows 上被編碼弄亂的裝置名稱（如 `RÃ˜DE`）會自動修正顯示。
@@ -234,6 +238,13 @@ uv run python main.py --help       # 所有參數
 | GET | `/api/state` | 目前完整狀態、曲線、近期通知 |
 | GET | `/api/spectrogram` | 頻譜圖資料（int16 二進位） |
 | GET | `/api/stream` | SSE 即時事件流 |
+| GET | `/api/psu/state` | 電源狀態、量測值、參數表 |
+| POST | `/api/psu/connect`、`/api/psu/disconnect` | 電源連線／斷線（`{"port": "COM8"}`） |
+| POST | `/api/psu/recipe` | 驗證並套用脈衝模式、頻率、佔空比與共用 U／I／P 上限（只准本機、輸出關閉時） |
+| POST | `/api/psu/setpoints`、`/api/psu/output` | 設定 U／I／P、開關輸出（只准本機） |
+| POST | `/api/psu/estop` | 緊急關閉（任何連線者都可） |
+| POST | `/api/psu/reset-alarms`、`/api/psu/reset-counters` | 重設警報、電弧計數（只准本機） |
+| POST | `/api/psu/params/read`、`/api/psu/param` | 讀參數、寫單一參數（只准本機、輸出關閉時） |
 
 #### 存檔內容（整場實驗完整保存）
 按下「開始監測」就建立 `Sensor_Data/EXP_YYYYmmdd_HHMMSS/`，資料**邊錄邊寫**（每筆都 flush，當機或斷電也只會少最後一瞬間）：
@@ -245,6 +256,7 @@ uv run python main.py --help       # 所有參數
 | `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(µm), Relative(µm), Status`（以 µm 記錄、小數 3 位；Absolute = 50 mm 基準 + Relative）；Elapsed 從測距儀第一筆讀值起算（溫度、光譜儀從實驗開始起算）；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
 | `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
 | `experiment_<id>.json` | 參數、實驗標籤（`experiment_labels`，見上節）、啟用的感測器、裝置、開始／結束時間、停止原因（手動停止、Ctrl+C、關閉終端機／主控台視窗、錯誤等）、各檔案筆數、頻譜 CSV 狀態與錯誤紀錄 | 數 KB |
+| `truplasma_<id>.csv` | 電源量測與狀態，每 0.5 秒一列（只有錄製中且電源已連線才會有，欄位見「電源供應器」一節） | 約 1–2 MB／小時（模擬、輸出關閉時實測 1.1 MB） |
 | `experiment_<id>.log` | 這次實驗的完整 log（開始參數、各感測器狀態變化與失敗原因、恢復、通知、停止與存檔摘要），每行即時寫入；伺服器層級的 log 另存在 `logs/server_YYYYMMDD.log` | 數十 KB |
 
 - 合計約 **460 MB／小時**，8 小時約 3.7 GB。預檢時若存檔磁碟剩餘空間 < 2 GB 會警告；錄製中寫檔失敗（例如磁碟滿）會跳通知並記錄在 json，監測不會靜默中斷。
@@ -266,11 +278,11 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 - 沒有硬體：用 `--simulate spectrometer`（或 `all`）。真實模式需要：Windows 64 位元、`drivers/avaspecx64.dll`（AvaSpec 官方驅動）、PyQt5（`uv sync --extra spectrometer`，驅動 import 時需要）、USB 接上光譜儀。缺任何一項時預檢會停用光譜儀並在狀態面板顯示原因，不影響其他感測器。
 
 #### 電源供應器（TRUMPF TruPlasma Bipolar 4010）
-網頁的「電源 TruPlasma」面板可以設定電壓／電流／功率、開關輸出、讀寫電源參數，並把電壓、電流、功率記進實驗資料夾。電源**獨立於實驗的開始／停止**：只有按「連線」才會連，伺服器啟動時不會自動連線；停止實驗不會動輸出。
+網頁的「電源 TruPlasma」面板顯示正負向平均值，並可設定脈衝配方與共用電壓／電流上限；進階區提供功率上限及完整參數。電壓、電流、功率會記進實驗資料夾。電源**獨立於實驗的開始／停止**：只有按「連線」才會連，伺服器啟動時不會自動連線；停止實驗不會動輸出。
 
 **使用方式**
 1. 在接電源的電腦（實驗室收資料電腦，電源接在 COM8）上開網頁，COM 欄位填 `COM8`（預設）按「連線」；沒有電源時用 `--simulate psu`（或 `all`）練習。
-2. 輸入 U／I／P 設定值（上限 1000 V／25 A／10 kW）按「套用設定值」，再按「開啟輸出」，確認視窗列出設定值後才會開。輸入框改了卻沒套用時不會開輸出。
+2. 輸入模式、頻率、佔空比及 U／I 上限（P 上限在進階區），確認並套用設定，再按「開始輸出」。輸入框改了卻沒套用時不會開輸出。
 3. 「關閉輸出」正常關機；「緊急關閉」立刻要求關閉輸出（連線中隨時可按）。
 4. 「電源參數」展開後按「讀取參數」，每列有「寫入」，會先確認「舊值 → 新值」。
 
@@ -287,6 +299,20 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 **注意**
 - COM8 同時只能一個程式使用：PVDPower／LabVIEW 開著時本程式連不上，反過來也一樣，請擇一。
 - **尚未用真實電源測試**：目前只在模擬器（`--simulate psu`）驗證；第一次接真機請先用低設定值（例如 50 V／1 A／0.1 kW）並有人在旁邊。
+
+#### 長時間穩定測試（scripts/soak_test.py）
+確認伺服器長時間執行時記憶體不會一直漲、執行緒不會一直增加、電源通訊不會偶發失敗。腳本**只讀取狀態**，不會開輸出、不會改設定值或參數；偵測到有人開了電源輸出會立刻中止測試（不會替你關）。
+
+```sh
+# 先另開終端機啟動伺服器（正式或模擬模式皆可），再執行：
+uv run python scripts/soak_test.py --duration 60m --connect-psu --with-recording
+```
+- `--duration`：測試長度（`3h`、`90m`、`600s`）；記憶體判準至少要 30 分鐘才會判斷。
+- `--connect-psu`：電源未連線時由腳本連線（`--psu-port`，預設 COM8），結束時只斷開自己連的。電源沒通電時會連不上並中止，這時不要加這個參數。
+- `--with-recording`：同時錄一場實驗（標籤為 soak test），結束時停止。至少要有一個感測器可用，否則伺服器預檢會拒絕。一小時約 0.5 GB。
+- `--interval`（預設 10 秒）取樣伺服器記憶體、CPU、執行緒、handle 與感測器狀態；電源狀態另外每 0.5 秒檢查一次。`--pid` 可指定伺服器程序（預設自動尋找，會連同 `uv` 底下的子程序一起量）。
+- 輸出到 `logs/soak_<時間>/`（或 `--out`）：`samples.csv`、`events.csv`、`summary.md`、`summary.json`。判定為「通過」「不通過」「未判定」（時間或資料不足），結束碼分別是 0／1／2。
+- 判準（可在腳本開頭調整）：記憶體成長 < 5 MB／小時、執行緒不持續成長、電源斷線 0 次、最長未通訊 < 2 秒、HTTP 失敗 0 次。
 
 #### 常見問題排除
 - **溫度計 COM 埠（預設自動偵測）**：COM 欄位留空（或填 `auto`），按開始時會逐一探測 USB 轉序列埠，回應的站號、功能碼與 CRC 都正確的那個就是溫度計，log 會記「自動偵測：溫度計在 COMx」。只探測 USB 轉接器，不碰主機板內建 COM。COM 號碼會隨 USB 孔改變（尤其沒有序號的 PL2303），所以不必記住號碼；也可以在欄位手動輸入埠名。
@@ -346,6 +372,8 @@ Python 套件本身在三大平台皆可安裝，上述限制來自硬體廠商�
 ---
 
 ## 已知問題
+
+- 溫度計 COM 自動偵測只有在電源**已連線**時才會略過電源的埠（COM8）；電源沒連線時，它會對 COM8 送溫度計的 Modbus 探測命令。電源應該會當成格式錯誤丟掉，但不該發生，待修正為一律略過電源的埠。
 
 - `legacy/sound_main.py` 與 `legacy/main_csv_test.py` 匯入了 `signal_package.save_spectrogram_to_tdms`，但 `signal_package` 只提供 `save_spectrogram_to_csv`，執行時會直接 `ImportError`。此問題與環境無關（改用 uv 之前即存在），需補上 TDMS 儲存實作（另需安裝 `npTDMS`）或改用 CSV 版本。
 

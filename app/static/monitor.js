@@ -971,8 +971,7 @@
 
 
     // 模擬模式標示
-    // 電源介面暫不顯示，模擬標示也不列出電源
-    const sim = (s.simulated || []).filter((k) => k !== "psu" || !$("psu-panel").hidden);
+    const sim = s.simulated || [];
     const simNames = { temp: "溫度", distance: "距離", audio: "音訊", spectrometer: "光譜儀", psu: "電源" };
     const chip = $("sim-chip");
     chip.hidden = !sim.length;
@@ -1124,7 +1123,7 @@
   // 電源供應器（TruPlasma）：狀態由 SSE `psu` 事件推送，操作都走 /api/psu/*。
   // 控制只准伺服器本機（can_control）；緊急關閉任何裝置都可用。
   // ------------------------------------------------------------------
-  const psu = { snap: null, table: [], modes: [], canControl: false, params: {}, spInit: false };
+  const psu = { snap: null, table: [], modes: [], canControl: false, params: {}, limits: {}, spInit: false, onSince: null };
   const PSU_GROUPS = [["pulse", "脈衝與頻率"], ["arc", "電弧管理"], ["ignition", "點火"], ["comm", "通訊（唯讀）"]];
   const PSU_PHASE_TONE = { disconnected: "neutral", connecting: "warn", idle: "ok", relays: "warn",
     powering: "warn", on: "error", stopping: "warn" };
@@ -1134,69 +1133,122 @@
   const fmtParam = (v) => (v === null || v === undefined ? "—" : String(Number(Number(v).toPrecision(6))));
   const psuErrors = (r, fallback) => (r.data && r.data.errors) || [fallback];
 
+  const recipeNumber = (id) => $(id).value.trim() === "" ? NaN : Number($(id).value);
+
+  function recipeInputs() {
+    const mono = document.querySelector('input[name="psu-kind"]:checked').value === "mono";
+    return { mode: mono ? `mono_${document.querySelector('input[name="psu-pole"]:checked').value}` : "bipulse",
+      freq_hz: recipeNumber("psu-freq"), duty_pct: recipeNumber("psu-duty"),
+      u: recipeNumber("psu-sp-u"), i: recipeNumber("psu-sp-i"), p: recipeNumber("psu-sp-p") };
+  }
+
+  function currentRecipe() {
+    const p = psu.params, sp = psu.snap.setpoints;
+    return { mode: ({4: "mono_a", 8: "mono_b", 32: "bipulse"})[p[33]] || "未知",
+      freq_hz: p[140] ? p[1100] : p[51130] * 1000, duty_pct: p[51131], ...sp };
+  }
+
+  function recipeChanged(key, a, b) {
+    if (key === "mode") return a !== b;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return true;
+    return key === "freq_hz" ? Math.round(a * 10) !== Math.round(b * 10) : Math.abs(a - b) >= 1e-6;
+  }
+
+  function modeName(mode) {
+    return ({ mono_a: "單極 A", mono_b: "單極 B", bipulse: "雙極" })[mode]
+      || psu.modes[Math.log2(psu.params[33])] || "未知";
+  }
+
+  function recipeChanges(next, cur) {
+    return Object.keys(next).filter((key) => recipeChanged(key, next[key], cur[key]));
+  }
+
+  function updateRecipe() {
+    const r = recipeInputs(), bi = r.mode === "bipulse";
+    $("psu-pole-box").hidden = bi;
+    $("psu-freq-hint").textContent = bi ? "1000–50000 Hz" : "1–100000 Hz；1000 Hz 以下自動使用低頻模式";
+    $("psu-duty-label").textContent = bi ? "正向 A 佔空比" : "佔空比";
+    $("psu-duty-hint").textContent = bi && r.freq_hz > 0 ? `負向 B = ${100 - r.duty_pct} % · A ${(1000000 / r.freq_hz * r.duty_pct / 100).toFixed(1)} µs / B ${(1000000 / r.freq_hz * (100-r.duty_pct) / 100).toFixed(1)} µs（不含 off time）` : "";
+    const cur = psu.snap && Object.keys(psu.params).length ? currentRecipe() : null;
+    const note = $("psu-mode-note");
+    note.hidden = !cur || cur.mode !== "未知" || psu.params[33] == null;
+    note.textContent = note.hidden ? "" : `電源目前是 ${modeName(cur.mode)} 模式（不在單極／雙極選項），套用後會改成所選模式`;
+    const fields = [
+      ["freq", r.freq_hz, bi ? 1000 : 1, bi ? 50000 : 100000],
+      ["duty", r.duty_pct, 1, 99],
+      ...["u", "i", "p"].map((k) => ["sp-" + k, r[k], 0, psu.limits[k]])
+    ];
+    let valid = true;
+    fields.forEach(([id, value, low, high]) => {
+      const el = $("psu-" + id + "-validation");
+      const invalid = !Number.isFinite(value) || !Number.isFinite(high) || value < low || value > high || (id === "sp-p" && value === 0);
+      const warn = !invalid && (id === "sp-u" || id === "sp-i") && value === 0;
+      const showValidation = !!(cur && psu.snap.connected);
+      el.dataset.level = showValidation ? (invalid ? "error" : warn ? "warn" : "") : "";
+      el.textContent = !showValidation ? "" : invalid ? (id === "sp-p" && value === 0 ? "功率上限必須大於 0，否則電源不會輸出" : Number.isFinite(high) ? `請輸入 ${low}–${high} 的數值` : "尚未取得設定範圍") : warn ? "為 0 時不會有輸出" : "";
+      $("psu-" + id).setAttribute("aria-invalid", showValidation && invalid ? "true" : "false");
+      valid = valid && !invalid;
+    });
+    const dirty = !!cur && recipeChanges(r, cur).length > 0;
+    $("psu-dirty").hidden = !dirty;
+    const apply = $("psu-apply"), enabled = dirty && valid && psu.canControl && psu.snap.phase === "idle";
+    apply.disabled = !enabled;
+    apply.classList.toggle("btn-start", enabled);
+    apply.classList.toggle("btn-ghost", !enabled);
+  }
+
+  function fillRecipe() {
+    if (!psu.snap || !Object.keys(psu.params).length) return;
+    const r = currentRecipe();
+    document.querySelector(`input[name="psu-kind"][value="${r.mode.startsWith("mono") ? "mono" : "bi"}"]`).checked = true;
+    if (r.mode.startsWith("mono")) document.querySelector(`input[name="psu-pole"][value="${r.mode.slice(-1)}"]`).checked = true;
+    $("psu-freq").value = r.freq_hz || ""; $("psu-duty").value = r.duty_pct ?? "";
+    ["u", "i", "p"].forEach((k) => { $("psu-sp-" + k).value = k === "p" && r.p === 0 ? psu.limits.p_default : r[k]; });
+    updateRecipe();
+  }
+
   function renderPsu() {
     const sn = psu.snap;
     if (!sn) return;
-    const st = sn.status, phase = sn.phase, ctl = psu.canControl, conn = sn.connected;
-    const badge = $("psu-phase");
-    badge.textContent = sn.phase_text; badge.dataset.tone = PSU_PHASE_TONE[phase] || "neutral";
+    const st = sn.status, phase = sn.phase, ctl = psu.canControl, conn = sn.connected, idle = phase === "idle";
+    if (phase === "on" && psu.onSince === null) psu.onSince = Date.now();
+    if (phase !== "on") psu.onSince = null;
+    const alarm = !!(st && st.alarm_active) || !!(sn.alarm && sn.alarm.level === "alarm");
+    const secs = psu.onSince === null ? 0 : Math.floor((Date.now() - psu.onSince) / 1000);
+    $("psu-phase").textContent = !conn ? "未連線" : alarm ? "警報" : phase === "on" ? `輸出中 ${String(Math.floor(secs/60)).padStart(2,"0")}:${String(secs%60).padStart(2,"0")}` : phase === "idle" ? "待機" : sn.phase_text;
+    $("psu-phase").dataset.tone = alarm ? "error" : PSU_PHASE_TONE[phase] || "neutral";
     $("psu-panel").dataset.live = phase === "on" ? "1" : "0";
     renderPsuAge();
-
-    // 警報／警告橫幅：優先顯示電源回報的代碼，否則顯示控制器記下的最近一次異常（例如輸出被自動關閉的原因）
-    const banner = $("psu-banner");
     let msg = "", level = "alarm";
     if (sn.alarm) { msg = `${sn.alarm.level === "alarm" ? "警報" : "警告"} ${sn.alarm.code}：${sn.alarm.text}`; level = sn.alarm.level; }
-    else if (st && st.alarm_active) msg = "警報中（讀取警報代碼中…）";
+    else if (alarm) msg = "警報中（讀取警報代碼中…）";
     else if (st && st.warning_active) { msg = "警告中（讀取警報代碼中…）"; level = "warning"; }
     else if (sn.error && conn) { msg = sn.error; level = "warning"; }
-    banner.hidden = !msg; banner.textContent = msg; banner.dataset.level = level;
-
-    document.querySelectorAll("#psu-flags .psu-flag").forEach((el) => {
-      const on = !!(st && st[el.dataset.flag]);
-      el.dataset.on = on ? "1" : "0";
-    });
-    $("psu-u").textContent = fmtNum(st && st.u_act, 1);
-    $("psu-i").textContent = fmtNum(st && st.i_act_peak, 2);
-    $("psu-p").textContent = fmtNum(st && st.p_act, 3);
-    $("psu-u-set").textContent = conn ? `設定 ${sn.setpoints.u} V` : "";
-    $("psu-i-set").textContent = conn ? `設定 ${sn.setpoints.i} A` : "";
-    $("psu-p-set").textContent = conn ? `設定 ${sn.setpoints.p} kW` : "";
-    $("psu-mode").textContent = (st && st.mode) || "--";
-    $("psu-reg").textContent = (st && st.regulation) || "--";
-    $("psu-arc-rate").textContent = st ? `${st.arc_rate} 次/秒` : "--";
-    $("psu-arc-counts").textContent = st && st.arc_counts
-      ? Object.entries(st.arc_counts).map(([k, v]) => `${k} ${v}`).join(" · ") : "";
-    const tb = $("psu-meas").tBodies[0];
-    // 以欄位名稱對應列：/api/psu/state（jsonify 會排序 key）和 SSE 的 key 順序不同，不能按位置對
-    const meas = sn.measurements || {};
-    const keys = Object.keys(meas).sort();
-    if ([...tb.rows].map((r) => r.dataset.key).join() !== keys.join()) {
-      tb.innerHTML = "";
-      keys.forEach((k) => { const tr = tb.insertRow(); tr.dataset.key = k; tr.insertCell().textContent = k; tr.insertCell(); });
+    $("psu-banner").hidden = !msg; $("psu-banner").dataset.level = level; $("psu-banner-text").textContent = msg;
+    $("psu-reset-alarms").hidden = !alarm;
+    document.querySelectorAll("#psu-flags .psu-flag").forEach((el) => { el.dataset.on = st && st[el.dataset.flag] ? "1" : "0"; });
+    const meas = sn.measurements || {}, mode = psu.params[33];
+    for (const [pole, u, i] of [["a", "Uavg_A_V", "Iavg_A_A"], ["b", "Uavg_B_V", "Iavg_B_A"]]) {
+      const inactive = (pole === "a" && mode === 8) || (pole === "b" && mode === 4);
+      $("psu-col-" + pole).classList.toggle("inactive", inactive);
+      $("psu-avg-u" + pole).textContent = inactive ? "—" : fmtNum(meas[u], 1);
+      $("psu-avg-i" + pole).textContent = inactive ? "—" : fmtNum(meas[i], 2);
     }
-    [...tb.rows].forEach((tr) => { const v = meas[tr.dataset.key]; tr.cells[1].textContent = v === null ? "--" : v; });
-
-    // 設定值輸入框：每次連線只用電源的設定值填一次，之後不蓋掉使用者正在輸入的內容
-    if (!conn) psu.spInit = false;
-    else if (!psu.spInit) {
-      psu.spInit = true;
-      $("psu-sp-u").value = sn.setpoints.u; $("psu-sp-i").value = sn.setpoints.i; $("psu-sp-p").value = sn.setpoints.p;
-    }
-
-    // 按鈕啟用：開啟只在 idle；關閉只在 relays/powering/on；參數寫入只在 idle；緊急關閉只要連線就能按
-    const idle = phase === "idle";
-    $("psu-local-note").hidden = ctl;
-    $("psu-port").disabled = !ctl || phase !== "disconnected";
-    $("psu-connect").disabled = !ctl || phase !== "disconnected";
-    $("psu-disconnect").disabled = !ctl || phase === "disconnected";
-    ["psu-sp-u", "psu-sp-i", "psu-sp-p", "psu-apply", "psu-reset-counters", "psu-read-params"]
-      .forEach((id) => { $(id).disabled = !ctl || !conn; });
-    $("psu-on").disabled = !ctl || !idle;
-    $("psu-off").disabled = !ctl || !["relays", "powering", "on"].includes(phase);
-    $("psu-reset-alarms").disabled = !ctl || !idle;
-    $("psu-estop").disabled = !conn;
+    $("psu-summary").textContent = `總功率 ${fmtNum(st && st.p_act, 3)} kW · 調節 ${(st && st.regulation) || "—"} · 實際頻率 ${fmtNum(meas.Freq_Hz, 0)} Hz · 實際佔空比 ${fmtNum(meas.Duty_pct, 1)} % · 電弧 ${st ? st.arc_rate : "—"} 次/秒`;
+    $("psu-u").textContent = fmtNum(st && st.u_act, 1); $("psu-i").textContent = fmtNum(st && st.i_act_peak, 2);
+    $("psu-arc-counts").textContent = st && st.arc_counts ? Object.entries(st.arc_counts).map(([k,v]) => `${k} ${v}`).join(" · ") : "";
+    const tb = $("psu-meas").tBodies[0], keys = Object.keys(meas).sort();
+    if ([...tb.rows].map((r) => r.dataset.key).join() !== keys.join()) { tb.innerHTML = ""; keys.forEach((k) => { const tr = tb.insertRow(); tr.dataset.key = k; tr.insertCell().textContent = k; tr.insertCell(); }); }
+    [...tb.rows].forEach((tr) => { tr.cells[1].textContent = meas[tr.dataset.key] ?? "--"; });
+    $("psu-local-note").hidden = ctl; $("psu-locked").hidden = !conn || idle;
+    $("psu-connect").hidden = conn; $("psu-disconnect").hidden = !conn;
+    $("psu-port").disabled = !ctl || conn; $("psu-connect").disabled = !ctl || phase !== "disconnected"; $("psu-disconnect").disabled = !ctl || !conn;
+    $("psu-settings").disabled = !ctl || !idle; $("psu-sp-p").disabled = !ctl || !idle;
+    $("psu-read-params").disabled = !ctl || !conn; $("psu-reset-counters").disabled = !ctl || !conn;
+    $("psu-on").disabled = !ctl || !idle; $("psu-off").disabled = !ctl || !["relays", "powering", "on"].includes(phase);
+    $("psu-reset-alarms").disabled = !ctl || !idle; $("psu-estop").disabled = !conn;
     document.querySelectorAll("#psu-param-list [data-write]").forEach((el) => { el.disabled = !ctl || !idle; });
+    updateRecipe();
   }
 
   function renderPsuAge() {
@@ -1277,8 +1329,11 @@
     const r = await api("/api/psu/state");
     if (!r.ok || !r.data) return;
     Object.assign(psu, { snap: r.data.snapshot, table: r.data.param_table, modes: r.data.pulse_modes,
-      canControl: r.data.can_control, params: r.data.params || {} });
+      canControl: r.data.can_control, params: r.data.params || {}, limits: r.data.recipe_limits });
+    ["u", "i", "p"].forEach((k) => { $("psu-sp-" + k).max = psu.limits[k]; });
+    $("psu-sp-p").value = psu.limits.p_default;
     renderPsuParams();
+    if (psu.snap.connected && psu.canControl) await onPsuReadParams();
     renderPsu();
   }
 
@@ -1291,22 +1346,28 @@
 
   async function onPsuConnect() {
     $("psu-connect").disabled = true;
-    await psuAction("/api/psu/connect", { port: $("psu-port").value.trim() || "COM8" });
+    const r = await psuAction("/api/psu/connect", { port: $("psu-port").value.trim() || "COM8" });
+    if (r.ok) {
+      await onPsuReadParams();
+    }
     renderPsu();
   }
 
-  function psuInputs() {
-    return { u: $("psu-sp-u").value, i: $("psu-sp-i").value, p: $("psu-sp-p").value };
-  }
-
   async function onPsuApply() {
-    await psuAction("/api/psu/setpoints", psuInputs());
+    const next = recipeInputs(), cur = currentRecipe();
+    const labels = { mode: "模式", freq_hz: "頻率 Hz", duty_pct: "佔空比 %", u: "電壓 V", i: "電流 A", p: "功率 kW" };
+    const changes = recipeChanges(next, cur);
+    if ($("psu-apply").disabled || !changes.length) return;
+    const items = changes.map((k) => `${labels[k]}：${k === "mode" ? modeName(cur[k]) : (cur[k] ?? "—")} → ${k === "mode" ? modeName(next[k]) : next[k]}`);
+    if (!await dialog({ title: "套用設定", lead: "變更將寫入電源。", items, question: "確定套用？", okText: "套用", cancelText: "取消" })) return;
+    const r = await psuAction("/api/psu/recipe", next);
+    if (r.ok) { psu.snap.setpoints = r.data.setpoints; psu.params = r.data.params; renderPsuParams(); fillRecipe(); renderPsu(); }
   }
 
   async function onPsuOn() {
-    const sp = psu.snap.setpoints, inp = psuInputs();
+    const sp = psu.snap.setpoints;
     // 開啟的是「電源目前已套用的設定值」；輸入框改了卻沒套用時不讓開，避免以為開的是新值
-    if (Number(inp.u) !== sp.u || Number(inp.i) !== sp.i || Number(inp.p) !== sp.p) {
+    if (!$("psu-dirty").hidden) {
       await showError(["輸入框的設定值還沒套用：請先按「套用設定值」再開啟輸出"]);
       return;
     }
@@ -1346,6 +1407,7 @@
       if (!r.ok) { await showError(psuErrors(r, "讀取參數失敗")); return; }
       psu.params = r.data.params || {};
       renderPsuParams();
+      fillRecipe();
     } finally {
       btn.textContent = "讀取參數";
       renderPsu();
@@ -1448,6 +1510,9 @@
   setInterval(renderPsuAge, 1000);
   $("psu-connect").addEventListener("click", onPsuConnect);
   $("psu-disconnect").addEventListener("click", () => psuAction("/api/psu/disconnect"));
+  document.querySelectorAll('#psu-settings input, #psu-sp-p').forEach((el) => el.addEventListener("input", () => {
+    updateRecipe();
+  }));
   $("psu-apply").addEventListener("click", onPsuApply);
   $("psu-on").addEventListener("click", onPsuOn);
   $("psu-off").addEventListener("click", () => psuAction("/api/psu/output", { on: false }));

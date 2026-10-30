@@ -175,7 +175,11 @@ class SimTruPlasma:
     def _measure(self, ch):
         if ch in self.params:
             return self.params[ch]
-        live = {966: self.u, 967: self.i, 980: self.p, 976: self.u * 0.2, 977: self.i * 0.2,
-                981: self.p * 0.2, 932: 27.0 + self.p * 2, 51140: self.params[51130] * 1000,
-                51141: self.params[51131]}
+        mode, duty = self.params[33], self.params[51131] / 100
+        a = duty if mode == 32 else (1 if mode == 4 else 0)
+        b = 1 - duty if mode == 32 else (1 if mode == 8 else 0)
+        freq = self.params[1100] if self.params[140] and mode in (4, 8, 16) else self.params[51130] * 1000
+        live = {966: self.u * a, 967: self.i * a, 980: self.p * a,
+                976: self.u * b, 977: self.i * b, 981: self.p * b,
+                932: 27.0 + self.p * 2, 51140: freq, 51141: self.params[51131]}
         return live.get(ch)

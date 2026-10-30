@@ -67,6 +67,7 @@ from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import list_candidate_ports  # noqa: E402
 from temp_py_package.reader import check_port_present, find_temperature_port, read_tx600n_diag
 from truplasma_package import MEASUREMENTS, PARAMS, SimTruPlasma, TruPlasmaController, open_serial  # noqa: E402
+from truplasma_package.params import RECIPE_LIMITS, plan_recipe  # noqa: E402
 from truplasma_package.protocol import PULSE_MODES  # noqa: E402
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
@@ -2438,7 +2439,7 @@ def _psu_connected():
 def api_psu_state():
     return jsonify({"ok": True, "snapshot": service.psu.snapshot(), "params": dict(service.psu.params),
                     "param_table": [p.to_dict() for p in PARAMS], "pulse_modes": PULSE_MODES,
-                    "can_control": _psu_can_control(), "simulated": "psu" in service.simulated})
+                    "recipe_limits": RECIPE_LIMITS, "can_control": _psu_can_control(), "simulated": "psu" in service.simulated})
 
 
 @app.post("/api/psu/connect")
@@ -2464,6 +2465,29 @@ def api_psu_setpoints():
     raw = request.get_json(silent=True) or {}
     return _psu_call(lambda: {"setpoints": dict(zip("uip", _psu_connected().set_setpoints(
         raw.get("u"), raw.get("i"), raw.get("p"))))})
+
+
+@app.post("/api/psu/recipe")
+def api_psu_recipe():
+    raw = request.get_json(silent=True)
+
+    def run():
+        plan_recipe({}, raw)  # 先驗證所有欄位，不寫入任何通道
+        psu = _psu_connected()
+        if psu.snapshot()["phase"] != "idle":
+            raise RuntimeError("參數會寫入電源的 EEPROM，請先關閉輸出再修改")
+        current = psu.read_params()
+        plan = plan_recipe(current, raw)
+        written = [psu.write_param(ch, value) for ch, value in plan]
+        all_channels = [33, 140, 1100 if raw["mode"] != "bipulse" and float(raw["freq_hz"]) <= 1000 else 51130, 51131]
+        skipped = [{"channel": ch, "value": current[ch]} for ch in all_channels if ch not in {item[0] for item in plan}]
+        # 設定上限前再次檢查，避免輸出已開啟時套用。
+        with psu.lock:
+            if psu.phase != "idle":
+                raise RuntimeError("參數會寫入電源的 EEPROM，請先關閉輸出再修改")
+            setpoints = dict(zip("uip", psu.set_setpoints(raw["u"], raw["i"], raw.get("p", RECIPE_LIMITS["p_default"]))))
+        return {"written": written, "skipped": skipped, "setpoints": setpoints, "params": dict(psu.params)}
+    return _psu_call(run)
 
 
 @app.post("/api/psu/output")

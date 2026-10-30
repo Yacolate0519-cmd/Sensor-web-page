@@ -166,68 +166,43 @@
       </section>
 
       <!-- 電源供應器（TRUMPF TruPlasma Bipolar 4010）：獨立於實驗的開始／停止，由使用者明確連線；控制只准本機 -->
-      <!-- 電源控制介面暫不顯示：等老師確認電源要怎麼控制再決定（2026-10-24）。後端與驅動保留 -->
-      <section class="psu" id="psu-panel" aria-label="電源 TruPlasma" hidden>
+      <section class="psu" id="psu-panel" aria-label="電源 TruPlasma">
         <header class="psu-head">
           <h2>電源 TruPlasma <span class="sim-tag" data-sim="psu" hidden>模擬</span></h2>
           <span class="sr-badge" id="psu-phase" data-tone="neutral">未連線</span>
           <span class="psu-meta" id="psu-meta"></span>
-          <div class="psu-conn">
-            <input id="psu-port" value="COM8" placeholder="COM8" spellcheck="false" aria-label="電源 COM 端口">
-            <button type="button" class="btn btn-sm btn-start" id="psu-connect">連線</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="psu-disconnect">斷線</button>
-          </div>
+          <div class="psu-conn"><button type="button" class="btn btn-sm btn-ghost" id="psu-connect">連線</button><button type="button" class="btn btn-sm btn-ghost" id="psu-disconnect">斷線</button></div>
         </header>
         <p class="psu-note" id="psu-local-note" hidden>只有接電源的電腦本機可以控制</p>
-        <div class="psu-banner" id="psu-banner" data-level="alarm" role="alert" hidden></div>
-        <div class="psu-flags" id="psu-flags">
-          <span class="psu-flag" data-flag="ready">Ready</span>
-          <span class="psu-flag" data-flag="rs_control">RS232 控制</span>
-          <span class="psu-flag" data-flag="interlock" data-bad="1">Interlock</span>
-          <span class="psu-flag" data-flag="relays_on">主繼電器</span>
-          <span class="psu-flag" data-flag="power_on" data-live="1">Power ON</span>
-        </div>
-
+        <div class="psu-banner" id="psu-banner" role="alert" hidden><span id="psu-banner-text"></span> <button type="button" class="btn btn-sm btn-ghost" id="psu-reset-alarms">重設警報</button></div>
         <div class="psu-readings">
-          <div class="psu-read"><span class="psu-label">Uact</span><span class="psu-big" id="psu-u">--</span><span class="unit">V</span><span class="psu-set" id="psu-u-set"></span></div>
-          <div class="psu-read"><span class="psu-label">Iact (peak)</span><span class="psu-big" id="psu-i">--</span><span class="unit">A</span><span class="psu-set" id="psu-i-set"></span></div>
-          <div class="psu-read"><span class="psu-label">Pact</span><span class="psu-big" id="psu-p">--</span><span class="unit">kW</span><span class="psu-set" id="psu-p-set"></span></div>
-          <div class="psu-read psu-read-text"><span class="psu-label">模式</span><span class="psu-mid" id="psu-mode">--</span><span class="psu-label">調節</span><span class="psu-mid" id="psu-reg">--</span></div>
+          <div class="psu-read" id="psu-col-a"><strong>正向 (A)</strong><span>平均電壓 V <b class="psu-big" id="psu-avg-ua">—</b></span><span>平均電流 A <b class="psu-big" id="psu-avg-ia">—</b></span></div>
+          <div class="psu-read" id="psu-col-b"><strong>負向 (B)</strong><span>平均電壓 V <b class="psu-big" id="psu-avg-ub">—</b></span><span>平均電流 A <b class="psu-big" id="psu-avg-ib">—</b></span></div>
         </div>
-
-        <div class="psu-arc">
-          <div class="psu-arcbox">
-            <span class="psu-label">電弧</span>
-            <span class="psu-mid" id="psu-arc-rate">--</span>
-            <span class="psu-set" id="psu-arc-counts"></span>
+        <p class="psu-meta" id="psu-summary"></p>
+        <fieldset class="psu-settings" id="psu-settings">
+          <legend>設定</legend>
+          <p id="psu-mode-note" class="psu-note" hidden></p>
+          <div class="psu-setting-grid">
+            <div class="field"><span class="field-label">模式</span><div class="seg"><label><input type="radio" name="psu-kind" value="mono"><span>單極</span></label><label><input type="radio" name="psu-kind" value="bi" checked><span>雙極</span></label></div></div>
+            <div class="field" id="psu-pole-box" hidden><span class="field-label">輸出</span><div class="seg"><label><input type="radio" name="psu-pole" value="a" checked><span>A</span></label><label><input type="radio" name="psu-pole" value="b"><span>B</span></label></div></div>
+            <label class="field"><span class="field-label">頻率 Hz</span><input id="psu-freq" type="number" min="1" max="100000" step="any"><small id="psu-freq-validation" aria-live="polite"></small><small id="psu-freq-hint"></small></label>
+            <label class="field"><span class="field-label" id="psu-duty-label">正向 A 佔空比</span><input id="psu-duty" type="number" min="1" max="99" step="any"><small id="psu-duty-validation" aria-live="polite"></small><small id="psu-duty-hint"></small></label>
+            <label class="field"><span class="field-label">電壓上限 V</span><input id="psu-sp-u" type="number" min="0" step="any"><small id="psu-sp-u-validation" aria-live="polite"></small></label>
+            <label class="field"><span class="field-label">電流上限 A</span><input id="psu-sp-i" type="number" min="0" step="any"><small id="psu-sp-i-validation" aria-live="polite"></small></label>
           </div>
-          <table class="psu-meas" id="psu-meas"><tbody></tbody></table>
-        </div>
-
-        <div class="psu-controls">
-          <div class="psu-sp">
-            <label class="field"><span class="field-label">電壓設定 U</span>
-              <div class="input-unit"><input id="psu-sp-u" type="number" min="0" max="1000" step="10" inputmode="decimal"><span>V</span></div></label>
-            <label class="field"><span class="field-label">電流設定 I</span>
-              <div class="input-unit"><input id="psu-sp-i" type="number" min="0" max="25" step="0.5" inputmode="decimal"><span>A</span></div></label>
-            <label class="field"><span class="field-label">功率設定 P</span>
-              <div class="input-unit"><input id="psu-sp-p" type="number" min="0" max="10" step="0.1" inputmode="decimal"><span>kW</span></div></label>
-            <button type="button" class="btn btn-sm btn-ghost" id="psu-apply">套用設定值</button>
-          </div>
-          <div class="psu-actions">
-            <button type="button" class="btn btn-sm btn-start" id="psu-on">開啟輸出</button>
-            <button type="button" class="btn btn-sm btn-stop" id="psu-off">關閉輸出</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="psu-reset-alarms">重設警報</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="psu-reset-counters">重設電弧計數</button>
-            <button type="button" class="btn btn-estop" id="psu-estop">緊急關閉</button>
-          </div>
-        </div>
-
-        <details class="psu-params" id="psu-params-box">
-          <summary>電源參數</summary>
-          <p class="field-hint">參數會寫入電源的 EEPROM，只能在輸出關閉時修改；寫入後會讀回比對。通訊相關設定只顯示、不開放寫入。</p>
-          <div class="psu-params-bar"><button type="button" class="btn btn-sm btn-ghost" id="psu-read-params">讀取參數</button></div>
-          <div id="psu-param-list"></div>
+          <p class="field-hint">正負向共用（此電源只有一組上限）</p>
+          <span id="psu-dirty" class="psu-note" hidden>未套用</span> <button type="button" class="btn btn-sm btn-ghost" id="psu-apply" disabled>套用設定</button>
+        </fieldset>
+        <p class="psu-note" id="psu-locked" hidden>輸出中，設定已鎖定</p>
+        <div class="psu-actions"><button type="button" class="btn btn-sm btn-start" id="psu-on">開始輸出</button><button type="button" class="btn btn-sm btn-stop" id="psu-off">停止輸出</button><button type="button" class="btn btn-estop" id="psu-estop">緊急關閉</button></div>
+        <details class="psu-params" id="psu-params-box"><summary>進階</summary>
+          <div class="psu-setting-grid"><label class="field"><span class="field-label">功率上限 P kW</span><input id="psu-sp-p" type="number" min="0" step="any"><small id="psu-sp-p-validation" aria-live="polite"></small></label><label class="field"><span class="field-label">COM 埠</span><input id="psu-port" value="COM8" placeholder="COM8" spellcheck="false"></label></div>
+          <div class="psu-flags" id="psu-flags"><span class="psu-flag" data-flag="ready">Ready</span><span class="psu-flag" data-flag="rs_control">RS232 控制</span><span class="psu-flag" data-flag="interlock" data-bad="1">Interlock</span><span class="psu-flag" data-flag="relays_on">主繼電器</span><span class="psu-flag" data-flag="power_on" data-live="1">Power ON</span></div>
+          <p class="psu-meta">Uact <span id="psu-u">—</span> V · Iact <span id="psu-i">—</span> A（單極為脈衝電流，雙極為 RMS）</p>
+          <p class="psu-meta" id="psu-arc-counts"></p><table class="psu-meas" id="psu-meas"><tbody></tbody></table>
+          <button type="button" class="btn btn-sm btn-ghost" id="psu-reset-counters">重設電弧計數</button>
+          <details class="psu-params"><summary>電源參數</summary><p class="field-hint">參數會寫入 EEPROM，只能在輸出關閉時修改；寫入後會讀回比對。</p><div class="psu-params-bar"><button type="button" class="btn btn-sm btn-ghost" id="psu-read-params">讀取參數</button></div><div id="psu-param-list"></div></details>
         </details>
       </section>
 

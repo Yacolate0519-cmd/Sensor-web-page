@@ -167,8 +167,11 @@ def test_param_write_readback_and_lockout(rig):
     c.set_setpoints(200, 2, 1)
     c.power_on()
     assert wait_for(lambda: c.phase == ctl.ON)
+    from sensors.truplasma_package.params import plan_recipe
+    plan = plan_recipe(c.read_params(), {"mode": "bipulse", "freq_hz": 5000, "duty_pct": 40, "u": 200, "i": 2, "p": 1})
     with pytest.raises(RuntimeError):
-        c.write_param(51131, 40)
+        for channel, value in plan:
+            c.write_param(channel, value)
 
 
 def test_alarm_reported_and_reset(rig):
@@ -178,3 +181,27 @@ def test_alarm_reported_and_reset(rig):
     c.reset_alarms()
     assert wait_for(lambda: not c.status.alarm_active)
     assert any("61623" in m for _, m in events)
+
+
+def test_recipe_planning():
+    from sensors.truplasma_package.params import plan_recipe
+    base = {"mode": "bipulse", "freq_hz": 5000, "duty_pct": 50, "u": 100, "i": 2}
+    for mode, bit in (("bipulse", 32), ("mono_a", 4), ("mono_b", 8)):
+        assert (33, bit) in plan_recipe({}, {**base, "mode": mode})
+    assert (140, 1) in plan_recipe({}, {**base, "mode": "mono_a", "freq_hz": 500})
+    assert (1100, 500) in plan_recipe({}, {**base, "mode": "mono_a", "freq_hz": 500})
+    assert (140, 0) in plan_recipe({}, {**base, "mode": "mono_a"})
+    assert (51130, 5.0) in plan_recipe({}, {**base, "mode": "mono_a"})
+    for change in ({"freq_hz": 500}, {"duty_pct": 0}, {"duty_pct": 100}, {"u": 1001}, {"i": 26}, {"p": 11}):
+        with pytest.raises(ValueError):
+            plan_recipe({}, {**base, **change})
+    assert plan_recipe({33: 32, 140: 0, 51130: 5, 51131: 50}, base) == []
+
+
+def test_recipe_rejects_zero_power_limit():
+    from app.web_monitor import app
+
+    recipe = {"mode": "bipulse", "freq_hz": 2300, "duty_pct": 35, "u": 150, "i": 1.5, "p": 0}
+    response = app.test_client().post("/api/psu/recipe", json=recipe)
+    assert response.status_code == 400
+    assert "功率" in response.json["errors"][0]

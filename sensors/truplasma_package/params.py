@@ -5,6 +5,9 @@ settings could cut this program off from the unit (baud, control source, address
 """
 from dataclasses import dataclass, asdict
 
+# 上限待學長確認，暫用額定值
+RECIPE_LIMITS = {"u": 1000.0, "i": 25.0, "p_default": 10.0, "p": 10.0}
+
 U_NOM, I_NOM, P_NOM = 1000.0, 25.0, 10.0  # V, A, kW (4010 rating, manual p.16)
 
 
@@ -125,3 +128,32 @@ def check_setpoints(u, i, p):
             raise ValueError(f"{name}設定值必須在 0–{hi:g} {unit}")
         out.append(v)
     return tuple(out)
+
+
+def plan_recipe(current, payload):
+    """驗證完整配方並回傳需要寫入的通道。"""
+    if not isinstance(payload, dict):
+        raise ValueError("配方必須是物件")
+    mode = payload.get("mode")
+    modes = {"bipulse": 32, "mono_a": 4, "mono_b": 8}
+    if not isinstance(mode, str) or mode not in modes:
+        raise ValueError("脈衝模式不正確")
+    def number(key, label, low, high, default=None):
+        try:
+            v = float(payload.get(key, default))
+        except (TypeError, ValueError):
+            raise ValueError(f"{label}必須是數字") from None
+        if not low <= v <= high:
+            raise ValueError(f"{label}必須在 {low:g}–{high:g}")
+        return v
+    freq = number("freq_hz", "頻率", 1000 if mode == "bipulse" else 1, 50000 if mode == "bipulse" else 100000)
+    duty = number("duty_pct", "佔空比", 1, 99)
+    for key, label in (("u", "電壓"), ("i", "電流"), ("p", "功率")):
+        value = number(key, label, 0, RECIPE_LIMITS[key], RECIPE_LIMITS["p_default"] if key == "p" else None)
+        if key == "p" and value == 0:
+            raise ValueError("功率上限必須大於 0，否則電源不會輸出")
+    low = mode != "bipulse" and freq <= 1000
+    desired = [(33, modes[mode]), (140, int(low)),
+               (1100, round(freq)) if low else (51130, round(freq / 1000, 1)), (51131, duty)]
+    return [(ch, value) for ch, value in desired
+            if current.get(ch, current.get(str(ch))) is None or abs(current.get(ch, current.get(str(ch))) - value) > 1e-5]
