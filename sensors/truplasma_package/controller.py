@@ -40,6 +40,15 @@ PHASE_TEXT = {
 }
 
 
+def alarm_message(alarm):
+    """Log/notice text for an alarm dict: our translation next to the unit's own text, never instead of it."""
+    kind = "警報" if alarm["level"] == "alarm" else "警告"
+    raw = alarm.get("raw") or ""
+    if alarm["text"] and alarm["text"] != raw:
+        return f"電源{kind} {alarm['code']}：{alarm['text']}（原文：{raw or '電源沒有附文字'}）"
+    return f"電源{kind} {alarm['code']}：{raw or '電源沒有附文字'}（對照表沒有此碼，以上為電源原文）"
+
+
 def open_serial(port, baudrate=115200):
     import serial
     s = serial.Serial(port, baudrate, timeout=0.3, write_timeout=0.5, dsrdtr=False, rtscts=False)
@@ -49,12 +58,13 @@ def open_serial(port, baudrate=115200):
 
 
 class TruPlasmaController:
-    def __init__(self, port_factory, address=0xFFFF, cycle_s=0.5, on_cycle=None, on_event=None):
+    def __init__(self, port_factory, address=0xFFFF, cycle_s=0.5, on_cycle=None, on_event=None, on_alarm=None):
         self.port_factory = port_factory
         self.address = address
         self.cycle_s = cycle_s
         self.on_cycle = on_cycle      # called with snapshot() after every heartbeat
         self.on_event = on_event      # called with (level, message) for notable events
+        self.on_alarm = on_alarm      # called with the alarm dict (code, text, raw, level) when the code changes
         self.lock = threading.RLock()
         self.jobs = queue.Queue()
         self.thread = None
@@ -304,8 +314,12 @@ class TruPlasmaController:
             self.measurements = values
             self.alarm = alarm
         if changed and alarm:
-            self._event("error" if alarm["level"] == "alarm" else "warning",
-                        f"電源{'警報' if alarm['level'] == 'alarm' else '警告'} {alarm['code']}：{alarm['text']}")
+            self._event("error" if alarm["level"] == "alarm" else "warning", alarm_message(alarm))
+            if self.on_alarm:
+                try:
+                    self.on_alarm(dict(alarm))
+                except Exception:
+                    log.exception("TruPlasma on_alarm callback failed")
 
     def _job_read_params(self, port):
         out = {}

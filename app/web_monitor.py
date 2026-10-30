@@ -59,7 +59,8 @@ import pyaudio  # noqa: E402
 from flask import Flask, Response, jsonify, redirect, render_template, request  # noqa: E402
 
 from rangefinder import LKIF2Device  # noqa: E402
-from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK  # noqa: E402
+from rangefinder.constants import LKIF_ABLEMODE_AUTO, RC_OK, rc_text  # noqa: E402
+from rangefinder.core import LKIFError  # noqa: E402
 import chunked_spectrogram  # noqa: E402
 import history  # noqa: E402
 import sim_devices  # noqa: E402
@@ -662,6 +663,27 @@ class ExperimentRecorder:
             self.errors.append({"time": iso_now(), "message": msg})
         self.write_json()
 
+    def note_code(self, source, code, value=None, text="", raw=None, level=None):
+        """儀器回報的原始代碼（測距儀 RC 碼／FloatResult、電源警報碼）照實記進 JSON 的 device_codes：
+        每個 (來源, 代碼) 一筆，含數值、程式的翻譯、儀器原文、次數與首末時間。
+        只在第一次出現或出現新原文時寫檔；次數在之後任何一次 write_json（最晚是停止存檔）一起寫出。"""
+        now = iso_now()
+        with self.lock:
+            codes = self.info.setdefault("device_codes", [])
+            entry = next((c for c in codes if c["source"] == source and c["code"] == code), None)
+            dirty = entry is None
+            if entry is None:
+                entry = {"source": source, "code": code, "value": value, "text": text, "level": level,
+                         "raw": [], "count": 0, "first_time": now}
+                codes.append(entry)
+            entry["count"] += 1
+            entry["last_time"] = now
+            if raw and raw not in entry["raw"] and len(entry["raw"]) < 20:
+                entry["raw"].append(raw)
+                dirty = True
+        if dirty:
+            self.write_json()
+
     def update(self, **fields):
         with self.lock:
             self.info.update(fields)
@@ -768,7 +790,7 @@ class MonitorService:
         self._psu_csv_lock = threading.Lock()  # 懶開／寫入／關閉 truplasma CSV 串行化
         self._psu_csv_rec = None               # 目前已為哪個 ExperimentRecorder 開過 CSV
         self.psu = TruPlasmaController(self._psu_open_port, on_cycle=self._psu_on_cycle,
-                                       on_event=self._psu_on_event)
+                                       on_event=self._psu_on_event, on_alarm=self._psu_on_alarm)
 
     # ---------------- 事件推送 ----------------
     def subscribe(self):
@@ -1352,6 +1374,9 @@ class MonitorService:
             self.sim_temp = sim_devices.SimTemperature(faults=self.sim_faults)
 
         self._log_start(experiment_id, recorder, info, p, raw, pf, com_port, audio_sel)
+        alarm = self.psu.snapshot()["alarm"]
+        if alarm:  # 開始前就存在的電源訊息（例如連線時就有的代碼），代碼改變才會再回呼，這裡先記一次
+            self._psu_on_alarm(alarm, before_start=True)
         self.publish("reset", {"run_id": run_id, "audio_meta": self.audio_meta()})
         self.push_state()
 
@@ -1427,6 +1452,20 @@ class MonitorService:
                         src=PSU_NAME)
         except Exception as e:  # noqa: BLE001  callback 不可丟例外
             slog(ERROR, PSU_NAME, f"電源事件通知失敗: {e}", e)
+
+    def _psu_on_alarm(self, alarm, before_start=False):
+        """電源警報／警告代碼改變時：實驗錄製中就把代碼、翻譯與電源原文照實寫進 experiment JSON。"""
+        with self.lock:
+            rec = self.recorder if self.phase == "running" else None
+        if rec is None:
+            return
+        try:
+            rec.note_code(PSU_NAME, str(alarm["code"]), value=alarm["code"], text=alarm.get("text", ""),
+                          raw=alarm.get("raw") or None, level=alarm.get("level"))
+            if before_start:
+                rec.update(psu_message_at_start=dict(alarm))
+        except OSError as e:
+            slog(ERROR, PSU_NAME, f"電源代碼寫入實驗 JSON 失敗: {e}", e)
 
     def _psu_on_cycle(self, snap):
         """controller thread 每輪呼叫：推 SSE，實驗錄製中再寫 CSV 與曲線。不可丟例外、不可卡住。"""
@@ -1957,6 +1996,8 @@ class MonitorService:
                     else:
                         status = d["FloatResult"]
                         log(f"Unknown({d['RawStatus']})" if status == "Unknown" else status)
+                        recorder.note_code("距離", f"Unknown({d['RawStatus']})" if status == "Unknown" else status,
+                                           value=d["RawStatus"], text="FloatResult")
                         self.add_series_point("distance", None)
                         consecutive_failures += 1
                         if consecutive_failures >= MAX_FAILURES and not disconnected:
@@ -1974,6 +2015,9 @@ class MonitorService:
                 except Exception as e:  # noqa: BLE001
                     self._log_exception_once("distance", e, "測距儀讀取錯誤")
                     log(f"ERROR: {e}")
+                    if isinstance(e, LKIFError):
+                        recorder.note_code("距離", f"RC=0x{e.rc:04X}", value=e.rc, text=rc_text(e.rc),
+                                           raw=str(e), level="error")
                     self.add_series_point("distance", None)
                     consecutive_failures += 1
                     if consecutive_failures == MAX_FAILURES and not disconnected:

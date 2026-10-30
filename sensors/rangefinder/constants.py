@@ -11,8 +11,13 @@ RC_CODES = {
     0x1002: "Command Length Error",
     0x2000: "Open Device Failed",
     0x2001: "Device Not Opened",
-    # ...根據需要可以擴充其他錯誤碼
+    # ...根據需要可以擴充其他錯誤碼（0x2003、0x2008、0x1005 已在實機出現，意思待查 KEYENCE LKIF2.h）
 }
+
+
+def rc_text(rc):
+    """RC 碼的說明；對照表沒有時回傳「未知碼 0x....」（不要顯示成 None）。"""
+    return RC_CODES.get(rc) or f"未知碼 0x{rc:04X}"
 
 # 測量結果狀態 (Float Result Status)
 FLOAT_RESULT = {

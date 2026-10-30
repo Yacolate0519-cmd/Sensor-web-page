@@ -6,11 +6,19 @@ import ctypes
 import os
 from ctypes import byref, c_int, POINTER
 from .types import LKIF_FLOATVALUE_OUT
-from .constants import RC_OK, RC_CODES, FLOAT_RESULT
+from .constants import RC_OK, FLOAT_RESULT, rc_text
 
 # 預設 DLL 位置：<專案根目錄>/drivers/LKIF2.dll（本檔在 <專案根目錄>/sensors/rangefinder/）
 DEFAULT_DLL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "drivers", "LKIF2.dll")
+
+class LKIFError(RuntimeError):
+    """DLL 函式回傳非 RC_OK。rc 保留原始數值，讓呼叫端照實寫進 log／JSON。"""
+
+    def __init__(self, what, rc):
+        self.rc = rc
+        super().__init__(f"{what}：RC=0x{rc:04X} ({rc_text(rc)})")
+
 
 class LKIF2Device:
     """
@@ -99,7 +107,7 @@ class LKIF2Device:
         """
         rc = self.dll.LKIF2_OpenDeviceUsb()
         if rc != RC_OK:
-            raise RuntimeError(f"OpenDevice 失敗：RC=0x{rc:X} ({RC_CODES.get(rc)})")
+            raise LKIFError("OpenDevice 失敗", rc)
         return rc
 
     def close(self):
@@ -131,12 +139,12 @@ class LKIF2Device:
             dict: 包含 OutNo、RawStatus、FloatResult、Value 的字典
 
         Raises:
-            RuntimeError: 當讀取失敗時，拋出異常並附上錯誤碼資訊
+            LKIFError（RuntimeError 子類）: 當讀取失敗時，拋出異常並附上錯誤碼資訊
         """
         result = LKIF_FLOATVALUE_OUT()
         rc = self.dll.LKIF2_GetCalcDataSingle(out_no, byref(result))
         if rc != RC_OK:
-            raise RuntimeError(f"Read failed：RC=0x{rc:X} ({RC_CODES.get(rc)})")
+            raise LKIFError("Read failed", rc)
         return {
             "OutNo":     result.OutNo,
             "RawStatus": result.FloatResult,
