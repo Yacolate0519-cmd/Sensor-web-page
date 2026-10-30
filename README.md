@@ -253,7 +253,7 @@ uv run python main.py --help       # 所有參數
 |---|---|---|
 | `audio_<id>.wav` | 全程原始音訊（16-bit，實際取樣率與聲道數） | 約 160 MB／小時（22050 Hz 單聲道；雙聲道加倍） |
 | `temperature_<id>.csv` | `Timestamp(ISO), Elapsed(s), Temperature(C), Status`；讀取失敗的列 Temperature 留空、Status 記錄原因 | 約 0.2 MB／小時 |
-| `distance_<id>.csv` | `Timestamp(Unix 秒), Elapsed(s), Absolute(µm), Relative(µm), Status`（以 µm 記錄、小數 3 位；Absolute = 50 mm 基準 + Relative）；Elapsed 從測距儀第一筆讀值起算（溫度、光譜儀從實驗開始起算）；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
+| `distance_<id>.csv` | `Timestamp(ISO), Elapsed(s), Absolute(µm), Relative(µm), Status`（以 µm 記錄、小數 3 位；Absolute = 50 mm 基準 + Relative）；Timestamp 與 Elapsed 的定義和其他 CSV 相同（Elapsed 從實驗開始起算）；測距儀初始化約 2.7 秒，這段沒有列。2026-10-30 以前的檔案 Timestamp 是 Unix 秒、Elapsed 從測距儀第一筆讀值起算（比實驗開始晚約 2.66 秒），對齊請用 Timestamp；每次讀取都記一列，Status 為儀器的 FloatResult（`VALID`／`+RANGEOVER`／`-RANGEOVER`／`WAITING`／`ALARM`／`INVALID`）或 `ERROR: <訊息>`，非 VALID 的列距離留空 | 約 1.5 MB／小時（測距間隔 0.1 秒） |
 | `spectrogram_<id>.csv` + `_metadata.txt` | 停止後由完整 WAV 產生，格式與原本 `save_spectrogram_to_csv` 完全相同 | 約 270–300 MB／小時 |
 | `experiment_<id>.json` | 參數、實驗標籤（`experiment_labels`，見上節）、啟用的感測器、裝置、開始／結束時間、停止原因（手動停止、Ctrl+C、關閉終端機／主控台視窗、錯誤等）、各檔案筆數、頻譜 CSV 狀態與錯誤紀錄 | 數 KB |
 | `truplasma_<id>.csv` | 電源量測與狀態，每 0.5 秒一列（只有錄製中且電源已連線才會有，欄位見「電源供應器」一節） | 約 1–2 MB／小時（模擬、輸出關閉時實測 1.1 MB） |

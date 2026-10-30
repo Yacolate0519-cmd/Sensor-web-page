@@ -1900,17 +1900,15 @@ class MonitorService:
         讀取例外時為 "ERROR: <訊息>"；非 VALID 的列 Absolute/Relative 留空，方便事後以 Timestamp 對齊。
         """
         device = None
-        t0 = None  # Elapsed(s) 以第一次讀取（不論是否有效）為 0
 
         def log(status, rel=None):
-            nonlocal t0
+            # Timestamp 與 Elapsed(s) 和其他 CSV 一致：ISO 時間、以實驗開始為 0（測距儀初始化約 2.7 秒，這段沒有列）
             now = time.time()
-            if t0 is None:
-                t0 = now
+            head = [iso_now(now), f"{now - self.start_time:.3f}"]
             if rel is None:
-                recorder.write_row("distance", [now, f"{now - t0:.3f}", "", "", status], ok=False)
+                recorder.write_row("distance", head + ["", "", status], ok=False)
             else:
-                recorder.write_row("distance", [now, f"{now - t0:.3f}", f"{(BASIC_REF + rel) * 1000:.3f}", f"{rel * 1000:.3f}", status])
+                recorder.write_row("distance", head + [f"{(BASIC_REF + rel) * 1000:.3f}", f"{rel * 1000:.3f}", status])
 
         try:
             if "distance" in self.simulated:
