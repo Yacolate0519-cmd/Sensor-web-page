@@ -355,7 +355,7 @@ uv run --with pymongo python legacy/check_db.py   # 列出 MongoDB 最新一筆�
 - 目前只有一個測試用的 `test.py`，沒有實際功能。
 
 ### app/templates、app/static
-- 網頁版前端（`monitor.html`、`monitor.js`、`monitor.css`）；`temp_calibration.html` 是溫度計校正頁（`/temp-calibration`，只讀溫度計、記錄校正點並匯出 CSV，與監測互斥）；`test.html`、`clock_test.html` 供 `legacy/main_web.py` 使用。
+- 網頁版前端（`monitor.html`、`monitor.js`、`monitor.css`）；`test.html`、`clock_test.html` 供 `legacy/main_web.py` 使用。
 
 ---
 

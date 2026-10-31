@@ -2369,7 +2369,6 @@ class MonitorService:
                 return
             self.shutdown_done = True
             running = self.phase == "running"
-        temp_cal.stop()
         # 電源第一個處理：disconnect 會先把輸出關掉再放掉 COM 埠（不必等實驗存檔）
         try:
             if self.psu.connected:
@@ -2403,9 +2402,8 @@ service = MonitorService()
 
 
 # ---------------------------------------------------------------------------
-# 溫度計校正：只讀 RiXEN TX-600N（T1、T2、狀態），不建立實驗資料夾、不寫檔（標記與結果由前端匯出 CSV）
+# TX-600N 讀值解析
 # ---------------------------------------------------------------------------
-TEMP_CAL_MAX_POINTS = 86400  # 1 秒一筆，最多保留 24 小時
 TX600N_VALID_RANGE = (-200.0, 1372.0)  # K 型熱電偶量程；超出（例如 Err 時的 1380.0）視為無效
 
 
@@ -2427,111 +2425,6 @@ def tx600n_reading(data):
     return out[0][0], out[1][0], out[0][1], out[1][1]
 
 
-class TempCalibration:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.running = False
-        self.com_port = ""
-        self.simulated = False
-        # [(epoch 秒, T1 或 None, T2 或 None, T1 錯誤說明, T2 錯誤說明, [T1 原始值, T2 原始值, 狀態字] 或 None), ...]
-        self.readings = []
-        self.offset = 0     # readings[0] 的全域索引（超過上限丟掉舊資料時遞增）
-        self.session = 0    # 開始時間：前端用來辨識同一輪讀取（重新整理頁面後接回標記）
-        self.device = None  # 最近一次成功讀到的 {"tc_type", "unit_f", "battery"}
-        self.status = {"level": "idle", "text": "待機", "detail": ""}
-        self.stop_event = threading.Event()
-        self.thread = None
-
-    def start(self, com):
-        if service.phase in ("running", "stopping"):
-            return {"ok": False, "errors": ["監測進行中，溫度計正在被使用：先停止監測再校正"]}, 409
-        with self.lock:
-            if self.running:
-                return {"ok": False, "errors": ["校正讀取已在進行中"]}, 409
-        simulated = "temp" in service.simulated
-        if simulated:
-            com = "SIM"
-        elif com.lower() in AUTO_COM_VALUES:
-            try:
-                found, tried = find_temperature_port(skip=service.psu_busy_ports())
-            except Exception as e:  # noqa: BLE001
-                slog(ERROR, SENSOR_NAMES["temp"], f"校正：自動偵測 COM 埠失敗: {e}", e)
-                return {"ok": False, "errors": ["自動偵測 COM 埠失敗：詳細內容見伺服器 log"]}, 400
-            if not found:
-                hint = f"已探測 {'、'.join(tried)}" if tried else "沒有 USB 序列埠"
-                return {"ok": False, "errors": [f"找不到溫度計（{hint}）：確認 USB-RS485 轉接器與感測器電源"]}, 400
-            com = found
-        reader = sim_devices.SimTemperature(faults=service.sim_faults).read_tx600n if simulated else read_tx600n_diag
-        with self.lock:
-            if self.running:  # 自動偵測期間另一個請求搶先開始
-                return {"ok": False, "errors": ["校正讀取已在進行中"]}, 409
-            self.running = True
-            self.com_port = com
-            self.simulated = simulated
-            self.readings = []
-            self.offset = 0
-            self.session = time.time()
-            self.device = None
-            self.status = {"level": "busy", "text": "讀取中", "detail": ""}
-            self.stop_event = threading.Event()
-            self.thread = threading.Thread(target=self._worker, args=(self.stop_event, com, reader),
-                                           name="temp-cal", daemon=True)
-            self.thread.start()
-        slog(INFO, SENSOR_NAMES["temp"], f"校正讀取開始：{'模擬' if simulated else com}，每 1 秒讀一次")
-        return {"ok": True, "com_port": com}, 200
-
-    def stop(self):
-        with self.lock:
-            if not self.running:
-                return False
-            self.stop_event.set()
-            thread = self.thread
-        if thread:
-            thread.join(timeout=3)
-        return True
-
-    def _worker(self, stop_event, com, reader):
-        try:
-            while not stop_event.is_set():
-                t = time.time()
-                try:
-                    data, reason, detail = reader(com)
-                except Exception as e:  # noqa: BLE001
-                    slog(ERROR, SENSOR_NAMES["temp"], f"校正：讀取錯誤: {e}", e)
-                    data, reason, detail = None, R_ERROR, "讀取溫度時發生錯誤：詳細內容見伺服器 log"
-                if data is None:
-                    text = f"{REASON_LABELS.get(reason, reason)}：{detail}" if detail else REASON_LABELS.get(reason, reason)
-                    row = (t, None, None, text, text, None)
-                else:
-                    row = (t, *tx600n_reading(data), data["raw"])
-                with self.lock:
-                    self.readings.append(row)
-                    if len(self.readings) > TEMP_CAL_MAX_POINTS:
-                        drop = len(self.readings) - TEMP_CAL_MAX_POINTS
-                        del self.readings[:drop]
-                        self.offset += drop
-                    if data is None:
-                        self.status = {"level": "warn", "text": REASON_LABELS.get(reason, reason), "detail": detail}
-                    else:
-                        self.device = {k: data[k] for k in ("tc_type", "unit_f", "battery")}
-                        self.status = {"level": "ok", "text": "通訊正常", "detail": ""}
-                stop_event.wait(max(0.0, 1 - (time.time() - t)))
-        finally:
-            with self.lock:
-                self.running = False
-                self.status = {"level": "idle", "text": "已停止", "detail": ""}
-            slog(INFO, SENSOR_NAMES["temp"], "校正讀取停止")
-
-    def state(self, since):
-        with self.lock:
-            start = max(since - self.offset, 0)
-            return {"running": self.running, "com_port": self.com_port, "simulated": self.simulated,
-                    "session": self.session, "device": self.device,
-                    "status": dict(self.status), "next": self.offset + len(self.readings),
-                    "readings": self.readings[start:]}
-
-
-temp_cal = TempCalibration()
 app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"),
             static_folder=os.path.join(APP_DIR, "static"))
 
@@ -2577,28 +2470,6 @@ def index():
     return render_template("monitor.html")
 
 
-@app.route("/temp-calibration")
-def temp_calibration():
-    return render_template("temp_calibration.html")
-
-
-@app.post("/api/temp-cal/start")
-def api_temp_cal_start():
-    raw = request.get_json(silent=True) or {}
-    body, code = temp_cal.start(str(raw.get("com_port") or "").strip())
-    return jsonify(body), code
-
-
-@app.post("/api/temp-cal/stop")
-def api_temp_cal_stop():
-    return jsonify({"ok": temp_cal.stop()})
-
-
-@app.get("/api/temp-cal/state")
-def api_temp_cal_state():
-    return jsonify(temp_cal.state(request.args.get("since", 0, type=int)))
-
-
 @app.get("/api/devices")
 def api_devices():
     kind = request.args.get("kind", "all")
@@ -2613,8 +2484,6 @@ def api_devices():
 @app.post("/api/preflight")
 def api_preflight():
     raw = request.get_json(silent=True) or {}
-    if temp_cal.running:
-        return jsonify({"ok": False, "errors": ["溫度計校正頁正在讀取：先停止校正再開始監測"], "warnings": []}), 409
     # 監測中再跑預檢會重開測距儀 DLL，干擾正在量測的 worker
     if service.phase in ("running", "stopping"):
         return jsonify({"ok": False, "errors": ["監測已在進行中"], "warnings": []}), 409
@@ -2626,8 +2495,6 @@ def api_preflight():
 @app.post("/api/start")
 def api_start():
     raw = request.get_json(silent=True) or {}
-    if temp_cal.running:
-        return jsonify({"ok": False, "errors": ["溫度計校正頁正在讀取：先停止校正再開始監測"]}), 409
     body, code = service.start(raw, bool(raw.get("confirm")))
     return jsonify(body), code
 
