@@ -206,7 +206,7 @@ uv run python main.py --help       # 所有參數
     - 光譜儀：量測間隔 0.5 秒、積分時間 50 ms。
   - 「輸入實驗標籤」開啟標籤視窗、「停止監測」（存檔期間顯示「儲存中…」）。監測沒有時間上限，一律手動停止。
 - **感測器狀態卡**（溫度／音訊／測距儀／光譜儀）：綠色＝正常、紅色＝警告或錯誤、橘色＝其他（待機、初始化、未啟用等）。卡片顯示原因分類（驅動／韌體問題、找不到裝置、Port 衝突、數據收不進來、接線／訊號異常、超出量程、未啟用、其他錯誤）、可行動的說明、「最後正常 N 秒前」與連續失敗次數。原始例外訊息不顯示在畫面上，請看實驗 log。
-- **圖表**：Spectrogram（聲音頻譜圖）與 Optical Spectrum（光譜，熱圖＋即時光譜）左右並排，下面是 Temperature（溫度）、Distance（距離）、PSU Voltage（電源電壓）、PSU Current (peak)（電源電流峰值）；標題一律「英文（中文）」。以 canvas 繪製、跟隨系統深淺色。兩張電源圖只在實驗錄製中且電源已連線時才有資料。
+- **圖表**：Spectrogram（聲音頻譜圖）與 Optical Spectrum（光譜，熱圖＋即時光譜）左右並排，下面是 Temperature（溫度）、Distance（距離）、PSU Voltage A / B（電源電壓，A、B 兩路平均各一條線，雙極脈衝時兩條都有值）、PSU Current (peak)（電源電流峰值）；標題一律「英文（中文）」。以 canvas 繪製、跟隨系統深淺色。兩張電源圖只在實驗錄製中且電源已連線時才有資料。
 - **開始流程**：填好實驗標籤並送出後進行預檢（偵測溫度計 COM 埠、選麥克風、試開測距儀與光譜儀、檢查參數與標籤、檢查磁碟空間）。預檢結果會先顯示在狀態卡上；有警告會跳確認視窗（「繼續監測」／「取消」），有錯誤則無法開始。至少要有一個感測器可用。找不到的感測器會被停用，不影響其他感測器。
 - **通知**：右側跳出 info／success／warning／error 通知（error 需手動關閉）。會通知的情況：感測器連續失敗 10 次判定斷線、恢復連線、音訊連續 3 秒全為 0、寫檔失敗、頻譜 CSV 產生失敗（附補產生指令）、監測完成摘要。所有通知同時寫進 log。
 - **麥克風預設**：音訊裝置清單中第一個名稱含 RØDE／RODE 的輸入裝置，找不到則用第一個輸入裝置（可用 `SENSOR_AUDIO_PREFER` 修改）。Windows 上被編碼弄亂的裝置名稱（如 `RÃ˜DE`）會自動修正顯示。
@@ -294,7 +294,7 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 - 除了 U／I／P，其他參數會寫入電源的 EEPROM，只能在輸出關閉時寫，寫完會讀回比對；通訊相關設定（介面、鮑率、位址、逾時等）只顯示、不開放寫入。
 - 電源使用中，溫度計 COM 自動偵測會略過電源的埠。
 
-**CSV**：實驗錄製中且電源已連線時，資料夾內會有 `truplasma_<id>.csv`（UTF-8 BOM，每 0.5 秒一列；實驗中途才連線則從連線那刻開始）。欄位：`Timestamp, Elapsed(s), Phase, Uset_V, Iset_A, Pset_kW, Uact_V, Iact_peak_A, Pact_kW`，接著是 `Uavg_A_V, Iavg_A_A, Pavg_A_kW, Uavg_B_V, Iavg_B_A, Pavg_B_kW, Freq_Hz, Duty_pct, T_OutputCores_C`，最後是 `RelaysOn, PowerOn, Interlock, AlarmActive, WarningActive, AlarmCode, Mode, Regulation, ArcRate_per_s, ArcCnt_Imax, ArcCnt_UxI, ArcCnt_dU, ArcCnt_Usag, ArcCnt_ArcBurst, Bits0, Bits1, Bits2, Bits3`（布林為 0／1；讀不到的量測值留空）。網頁另有 PSU Voltage、PSU Current (peak) 兩張曲線。
+**CSV**：實驗錄製中且電源已連線時，資料夾內會有 `truplasma_<id>.csv`（UTF-8 BOM，每 0.5 秒一列；實驗中途才連線則從連線那刻開始）。欄位：`Timestamp, Elapsed(s), Phase, Uset_V, Iset_A, Pset_kW, Uact_V, Iact_peak_A, Pact_kW`，接著是 `Uavg_A_V, Iavg_A_A, Pavg_A_kW, Uavg_B_V, Iavg_B_A, Pavg_B_kW, Freq_Hz, Duty_pct, T_OutputCores_C`，最後是 `RelaysOn, PowerOn, Interlock, AlarmActive, WarningActive, AlarmCode, Mode, Regulation, ArcRate_per_s, ArcCnt_Imax, ArcCnt_UxI, ArcCnt_dU, ArcCnt_Usag, ArcCnt_ArcBurst, Bits0, Bits1, Bits2, Bits3`（布林為 0／1；讀不到的量測值留空）。網頁另有 PSU Voltage A / B（畫 `Uavg_A_V`、`Uavg_B_V`，不是 `Uact_V`）、PSU Current (peak) 兩張曲線。
 
 **注意**
 - COM8 同時只能一個程式使用：PVDPower／LabVIEW 開著時本程式連不上，反過來也一樣，請擇一。

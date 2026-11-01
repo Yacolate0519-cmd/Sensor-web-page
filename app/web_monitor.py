@@ -912,9 +912,9 @@ class MonitorService:
         self.zero_warned = False
 
         # 溫度／距離時間序列（本次監測全程）：[(elapsed 秒, 值或 None), ...]；開始新監測時清空
-        # psu_u / psu_i：電源電壓、電流（峰值），只在實驗錄製中且電源已連線時累積
-        self.series = {"temp": [], "distance": [], "psu_u": [], "psu_i": []}
-        self.series_sent = {"temp": 0, "distance": 0, "psu_u": 0, "psu_i": 0}  # 已透過 SSE 送出的筆數
+        # psu_u_a / psu_u_b：A、B 兩路平均電壓；psu_i：電流（峰值）。只在實驗錄製中且電源已連線時累積
+        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i": 0}  # 已透過 SSE 送出的筆數
 
         # 光譜儀（Optical Spectrum）：波長軸 meta、降採樣歷史（熱圖用）、最新一筆完整解析度（即時光譜用）
         self.opt_meta = None
@@ -1571,8 +1571,8 @@ class MonitorService:
             self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
             self.spec_total = 0
             self.spec_freqs = None
-            self.series = {"temp": [], "distance": [], "psu_u": [], "psu_i": []}
-            self.series_sent = {"temp": 0, "distance": 0, "psu_u": 0, "psu_i": 0}
+            self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i": []}
+            self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i": 0}
             self._psu_csv_rec = None
             self.opt_meta = None
             self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
@@ -1768,7 +1768,8 @@ class MonitorService:
                     return
                 self._psu_mark_recorder(rec)
             rec.write_row("truplasma", row)
-        self.add_series_point("psu_u", st["u_act"])
+        self.add_series_point("psu_u_a", meas.get("Uavg_A_V"))
+        self.add_series_point("psu_u_b", meas.get("Uavg_B_V"))
         self.add_series_point("psu_i", st["i_act_peak"])
 
     def _psu_mark_recorder(self, rec):

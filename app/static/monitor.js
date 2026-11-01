@@ -219,8 +219,11 @@
       if (this.pts.length > SERIES_KEEP) this.pts = downsampleSeries(this.pts, SERIES_TARGET);
       this.requestDraw();
     }
+    bounds() { return [this.lo, this.hi]; }
+    // 要畫的線；單線圖只有一條，雙線圖（DualSeriesChart）覆寫
+    layers() { return [{ pts: this.pts, color: this.opts.color(), tag: "" }]; }
     yRange() {
-      let lo = this.lo, hi = this.hi;
+      let [lo, hi] = this.bounds();
       if (!(hi >= lo)) return [0, 1];
       const min = this.opts.minRange;
       if (hi - lo < min) { const mid = (hi + lo) / 2; lo = mid - min / 2; hi = mid + min / 2; }
@@ -229,44 +232,44 @@
     }
     draw() {
       const p = this.begin();
-      const pts = this.pts;
-      const tEnd = pts.length ? pts[pts.length - 1][0] : 0;
+      const layers = this.layers();
+      const tEnd = Math.max(0, ...layers.map((l) => (l.pts.length ? l.pts[l.pts.length - 1][0] : 0)));
       const x = [0, Math.max(10, tEnd)];
       const y = this.yRange();
       const { X, Y } = this.axes(p, x, y, this.opts.labels);
-      if (!pts.length) { this.placeholder(p, this.disabled ? "未啟用" : "等待資料"); return; }
+      if (!layers.some((l) => l.pts.length)) { this.placeholder(p, this.disabled ? "未啟用" : "等待資料"); return; }
       const ctx = this.ctx;
       ctx.save();
       ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-      const color = this.opts.color();
-      ctx.strokeStyle = color; ctx.fillStyle = color;
-      ctx.lineWidth = 1.25; ctx.lineJoin = "round";
-      ctx.beginPath();
-      let pen = false, single = null; // pen：目前這段線已落筆；single：只有一個點的區段（補畫圓點）
-      const dots = [];
-      for (let i = 0; i < pts.length; i++) {
-        const q = pts[i];
-        if (q[1] === null) { if (single) dots.push(single); pen = false; single = null; continue; }
-        const px = X(q[0]), py = Y(q[1]);
-        if (!pen) { ctx.moveTo(px, py); pen = true; single = [px, py]; }
-        else { ctx.lineTo(px, py); single = null; }
+      for (const { pts, color } of layers) {
+        ctx.strokeStyle = color; ctx.fillStyle = color;
+        ctx.lineWidth = 1.25; ctx.lineJoin = "round";
+        ctx.beginPath();
+        let pen = false, single = null; // pen：目前這段線已落筆；single：只有一個點的區段（補畫圓點）
+        const dots = [];
+        for (let i = 0; i < pts.length; i++) {
+          const q = pts[i];
+          if (q[1] === null) { if (single) dots.push(single); pen = false; single = null; continue; }
+          const px = X(q[0]), py = Y(q[1]);
+          if (!pen) { ctx.moveTo(px, py); pen = true; single = [px, py]; }
+          else { ctx.lineTo(px, py); single = null; }
+        }
+        if (single) dots.push(single);
+        ctx.stroke();
+        dots.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill(); });
       }
-      if (single) dots.push(single);
-      ctx.stroke();
-      dots.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill(); });
       ctx.restore();
-      this.drawLatest(p, X, Y, color);
+      layers.forEach((l) => this.drawLatest(p, X, Y, l.color, l.pts, l.tag));
     }
     // 最新值標籤：圓點 + 圓角標籤，垂直置中於最後一個有效點；最新一筆為 null 時改警告樣式
-    drawLatest(p, X, Y, color) {
-      const pts = this.pts;
+    drawLatest(p, X, Y, color, pts, tag) {
       let k = pts.length - 1;
       while (k >= 0 && pts[k][1] === null) k--;
       if (k < 0) return; // 完全沒有有效點
       const failed = k !== pts.length - 1;
       const px = X(pts[k][0]), py = Y(pts[k][1]);
       const ctx = this.ctx;
-      const text = failed ? (this.statusText || "讀取失敗") : `${pts[k][1].toFixed(this.opts.decimals)} ${this.opts.unit}`;
+      const text = failed ? (this.statusText || "讀取失敗") : `${tag}${pts[k][1].toFixed(this.opts.decimals)} ${this.opts.unit}`;
       const bg = failed ? theme.warn : color;
       ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2);
       ctx.fillStyle = bg; ctx.fill();
@@ -281,6 +284,27 @@
       ctx.fillStyle = failed ? "#1a1400" : "#fff";
       ctx.textAlign = "left"; ctx.textBaseline = "middle";
       ctx.fillText(text, bx + padX, by + bh / 2 + 0.5);
+    }
+  }
+
+  // 同一張圖畫 A、B 兩條線（雙極脈衝電源的正向／負向電壓）；A 走原本的 add／setAll，B 走 addB／setAllB
+  class DualSeriesChart extends SeriesChart {
+    clear() { this.pts2 = []; this.lo2 = Infinity; this.hi2 = -Infinity; super.clear(); }
+    setAll(points) { this.pts = []; this.lo = Infinity; this.hi = -Infinity; this.add(points); }
+    setAllB(points) { this.pts2 = []; this.lo2 = Infinity; this.hi2 = -Infinity; this.addB(points); }
+    addB(points) {
+      const last = this.pts2.length ? this.pts2[this.pts2.length - 1][0] : -Infinity;
+      for (const q of points) {
+        if (q[0] < last) continue;
+        this.pts2.push(q);
+        if (q[1] !== null) { if (q[1] < this.lo2) this.lo2 = q[1]; if (q[1] > this.hi2) this.hi2 = q[1]; }
+      }
+      if (this.pts2.length > SERIES_KEEP) this.pts2 = downsampleSeries(this.pts2, SERIES_TARGET);
+      this.requestDraw();
+    }
+    bounds() { return [Math.min(this.lo, this.lo2), Math.max(this.hi, this.hi2)]; }
+    layers() {
+      return [{ pts: this.pts, color: this.opts.color(), tag: "A " }, { pts: this.pts2, color: this.opts.color2(), tag: "B " }];
     }
   }
 
@@ -687,16 +711,17 @@
     labels: ["Time (s)", "Distance (µm)"],
     color: () => theme.wave, unit: "µm", minRange: 500, decimals: 1,
   });
-  const psuUChart = new SeriesChart($("cv-psu-u"), {
-    labels: ["Time (s)", "PSU Voltage (V)"],
-    color: () => theme.wave, unit: "V", minRange: 10, decimals: 1,
+  const psuUChart = new DualSeriesChart($("cv-psu-u"), {
+    labels: ["Time (s)", "PSU Voltage, A / B avg (V)"],
+    color: () => theme.wave, color2: () => theme.fft, unit: "V", minRange: 10, decimals: 1,
   });
+  const psuUChartB = { add: (pts) => psuUChart.addB(pts), setAll: (pts) => psuUChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
   const psuIChart = new SeriesChart($("cv-psu-i"), {
     labels: ["Time (s)", "PSU Current, peak (A)"],
     color: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
   });
   // key 對應 /api/state 的 series；psu_* 不是感測器（沒有 sensors／enabled 項目），renderState 會略過
-  const seriesCharts = { temp: tempChart, distance: distChart, psu_u: psuUChart, psu_i: psuIChart };
+  const seriesCharts = { temp: tempChart, distance: distChart, psu_u_a: psuUChart, psu_u_b: psuUChartB, psu_i: psuIChart };
   const optHeat = new SpectrumHeatmap($("cv-opt"));
   const optLive = new LiveSpectrum($("cv-opt-live"), optHeat);
   const charts = [specChart, tempChart, distChart, psuUChart, psuIChart, optHeat, optLive];
