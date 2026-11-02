@@ -518,3 +518,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
   .flow-modal { padding: 0; }
   .flow-modal-card { width: 100vw; max-height: 100vh; height: 100vh; border-radius: 0; border: 0; }
 }
+
+/* 雙極脈衝換算說明 */
+.pulse-line { display: block; }
+.pulse-line[data-level="warn"] { color: var(--warn); }

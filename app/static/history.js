@@ -9,15 +9,15 @@
   // ------------------------------------------------------------------
   const SECTIONS = [
     { kind: "psu", title: "電源 TruPlasma", charts: [
-      { id: "u", title: "電壓", unit: "V", zero: true, series: [
+      { id: "u", title: "電壓 U", unit: "V", zero: true, series: [
         { key: "Uavg_A_V", label: "A 極平均", color: "--chart-wave" },
         { key: "Uavg_B_V", label: "B 極平均", color: "--chart-fft" },
-        { key: "Uset_V", label: "電壓上限設定", color: "--text-3", dashed: true, noBand: true }] },
-      { id: "i", title: "電流", unit: "A", zero: true, series: [
+        { key: "Uset_V", label: "電壓上限設定 U", color: "--text-3", dashed: true, noBand: true }] },
+      { id: "i", title: "電流 I", unit: "A", zero: true, series: [
         { key: "Iavg_A_A", label: "A 極平均", color: "--chart-wave" },
         { key: "Iavg_B_A", label: "B 極平均", color: "--chart-fft" },
-        { key: "Iset_A", label: "電流上限設定（RMS）", color: "--text-3", dashed: true, noBand: true }] },
-      { id: "p", title: "功率", unit: "kW", zero: true, series: [
+        { key: "Iset_A", label: "電流上限設定 I（RMS）", color: "--text-3", dashed: true, noBand: true }] },
+      { id: "p", title: "功率 P", unit: "kW", zero: true, series: [
         { key: "Pavg_A_kW", label: "A 極", color: "--chart-wave" },
         { key: "Pavg_B_kW", label: "B 極", color: "--chart-fft" }] },
       { id: "arc", title: "電弧率", unit: "次/s", zero: true, series: [
@@ -106,7 +106,7 @@
       this.def = def; this.kind = kind; this.resp = null; this.drag = null;
       this.fig = el("figure", "hchart");
       const cap = el("figcaption");
-      this.titleEl = el("h4", null, def.title + (def.unit ? ` (${def.unit})` : ""));
+      this.titleEl = el("h4", null, def.title + (def.unit ? `（${def.unit}）` : ""));
       this.legend = el("div", "hlegend");
       this.readout = el("span", "hreadout");
       cap.append(this.titleEl, this.legend, this.readout);
@@ -132,7 +132,7 @@
     setData(resp) {
       this.resp = resp;
       if (resp && this.def.unitFrom && resp[this.def.unitFrom]) {
-        this.titleEl.textContent = `${this.def.title} (${resp[this.def.unitFrom]})`;
+        this.titleEl.textContent = `${this.def.title}（${resp[this.def.unitFrom]}）`;
       }
       this.draw();
     }
@@ -463,8 +463,8 @@
     const psu = S.data.psu, st = psu && psu.stats;
     if (st) {
       add("電源輸出時間", fmtDur(S.outputOn.reduce((a, [x, y]) => a + (y - x), 0)));
-      if (st.Uavg_A_V && st.Uavg_B_V) add("最高電壓 A / B", `${fmtNum(st.Uavg_A_V.max, 0)} / ${fmtNum(st.Uavg_B_V.max, 0)} V`);
-      if (st.Iavg_A_A && st.Iavg_B_A) add("最大電流 A / B", `${fmtNum(st.Iavg_A_A.max, 1)} / ${fmtNum(st.Iavg_B_A.max, 1)} A`);
+      if (st.Uavg_A_V && st.Uavg_B_V) add("最高電壓 U（A / B 極）", `${fmtNum(st.Uavg_A_V.max, 0)} / ${fmtNum(st.Uavg_B_V.max, 0)} V`);
+      if (st.Iavg_A_A && st.Iavg_B_A) add("最大電流 I（A / B 極）", `${fmtNum(st.Iavg_A_A.max, 1)} / ${fmtNum(st.Iavg_B_A.max, 1)} A`);
       if (st.ArcRate_per_s) add("最大電弧率", `${fmtNum(st.ArcRate_per_s.max, 0)} 次/s`);
       if (psu.regulation) add("調節模式（輸出中）", Object.entries(psu.regulation).map(([k, n]) => `${k}:${n}`).join(" "));
     }

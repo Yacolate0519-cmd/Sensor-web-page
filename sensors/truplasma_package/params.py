@@ -119,7 +119,7 @@ def check_value(param, value):
 
 def check_setpoints(u, i, p):
     out = []
-    for name, value, hi, unit in (("電壓", u, U_NOM, "V"), ("電流", i, I_NOM, "A"), ("功率", p, P_NOM, "kW")):
+    for name, value, hi, unit in (("電壓 U", u, U_NOM, "V"), ("電流 I", i, I_NOM, "A"), ("功率 P", p, P_NOM, "kW")):
         try:
             v = float(value)
         except (TypeError, ValueError):
@@ -175,15 +175,15 @@ def plan_recipe(current, payload):
         if not low <= v <= high:
             raise ValueError(f"{label}必須在 {low:g}–{high:g}")
         return v
-    freq = number("freq_hz", "頻率", 1000 if mode == "bipulse" else 1, 50000 if mode == "bipulse" else 100000)
+    freq = number("freq_hz", "頻率 f（Hz）", 1000 if mode == "bipulse" else 1, 50000 if mode == "bipulse" else 100000)
     if mode == "bipulse":
-        duty, off = bipulse_timing(number("pos_pct", "正向導通 %", 1, 98), number("neg_pct", "負向導通 %", 1, 98))
+        duty, off = bipulse_timing(number("pos_pct", "正向導通（%）", 1, 98), number("neg_pct", "負向導通（%）", 1, 98))
     else:
-        duty = number("duty_pct", "佔空比", 1, 99)
-    for key, label in (("u", "電壓"), ("i", "電流"), ("p", "功率")):
+        duty = number("duty_pct", "佔空比（%）", 1, 99)
+    for key, label in (("u", "電壓 U（V）"), ("i", "電流 I（A）"), ("p", "功率 P（kW）")):
         value = number(key, label, 0, RECIPE_LIMITS[key], RECIPE_LIMITS["p_default"] if key == "p" else None)
         if key == "p" and value == 0:
-            raise ValueError("功率上限必須大於 0，否則電源不會輸出")
+            raise ValueError("功率上限 P 必須大於 0，否則電源不會輸出")
     low = mode != "bipulse" and freq <= 1000
     desired = [(33, modes[mode]), (140, int(low)),
                (1100, round(freq)) if low else (51130, round(freq / 1000, 1)), (51131, duty)]

@@ -712,12 +712,12 @@
     color: () => theme.wave, unit: "µm", minRange: 500, decimals: 1,
   });
   const psuUChart = new DualSeriesChart($("cv-psu-u"), {
-    labels: ["Time (s)", "PSU Voltage, A / B avg (V)"],
+    labels: ["Time (s)", "電壓 U（V）A / B 平均"],
     color: () => theme.wave, color2: () => theme.fft, unit: "V", minRange: 10, decimals: 1,
   });
   const psuUChartB = { add: (pts) => psuUChart.addB(pts), setAll: (pts) => psuUChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
   const psuIChart = new DualSeriesChart($("cv-psu-i"), {
-    labels: ["Time (s)", "PSU Current, A / B avg (A)"],
+    labels: ["Time (s)", "電流 I（A）A / B 平均"],
     color: () => theme.wave, color2: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
   });
   const psuIChartB = { add: (pts) => psuIChart.addB(pts), setAll: (pts) => psuIChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
@@ -1155,16 +1155,16 @@
     const range = (v, lo, hi, name, unit, open) => {
       if (!Number.isFinite(v) || (open ? v <= lo : v < lo) || v > hi) errs.push(`${name}須${open ? "大於" : "介於"} ${lo}${open ? "、不超過" : "–"}${hi} ${unit}`);
     };
-    range(r.freq_hz, bi ? 1000 : 1, bi ? 50000 : 100000, "頻率", "Hz");
+    range(r.freq_hz, bi ? 1000 : 1, bi ? 50000 : 100000, "頻率 f", "Hz");
     if (bi) {
-      range(r.pos_pct, 1, 98, "正向導通", "%");
-      range(r.neg_pct, 1, 98, "負向導通", "%");
+      range(r.pos_pct, 1, 98, "正向佔空比", "%");
+      range(r.neg_pct, 1, 98, "負向佔空比", "%");
       const t = bipulseTiming(r.pos_pct, r.neg_pct);
       if (t.error && Number.isFinite(r.pos_pct) && Number.isFinite(r.neg_pct)) errs.push(t.error);
     } else range(r.duty_pct, 1, 99, "佔空比", "%");
-    range(r.u, 0, lim.u, r.control === "cv" ? "電壓設定" : "電壓上限", "V", true);
-    range(r.i, 0, lim.i, r.control === "cc" ? "電流設定" : "電流上限", "A", true);
-    range(r.p, 0, lim.p, "功率上限", "kW", true);
+    range(r.u, 0, lim.u, r.control === "cv" ? "電壓設定 U" : "電壓上限 U", "V", true);
+    range(r.i, 0, lim.i, r.control === "cc" ? "電流設定 I" : "電流上限 I", "A", true);
+    range(r.p, 0, lim.p, "功率上限 P", "kW", true);
     if (!Number.isFinite(parseExpTime(expTimeText()))) errs.push("實驗時間必填（分、秒），秒須 0–59，總長大於 0");
     return errs;
   }
@@ -1198,8 +1198,8 @@
     const cv = r.control === "cv", lim = expLimits();
     $("exp-u-field").hidden = !cv;
     $("exp-i-field").hidden = cv;
-    $("exp-control-hint").textContent = cv ? `電流不限（設為電源上限 ${lim.i} A），由功率上限 P 保護`
-      : `電壓不限（設為電源上限 ${lim.u} V），由功率上限 P 保護`;
+    $("exp-control-hint").textContent = cv ? `電流 I 不限（設為電源上限 ${lim.i} A），由功率上限 P 保護`
+      : `電壓 U 不限（設為電源上限 ${lim.u} V），由功率上限 P 保護`;
     $("exp-pole-box").hidden = bi;
     $("exp-duty-field").hidden = bi;
     $("exp-pos-field").hidden = $("exp-neg-field").hidden = !bi;
@@ -1242,7 +1242,7 @@
     bar.hidden = false;
     const now = Date.now() / 1000 - clockOffset;
     const st = psu.snap && psu.snap.status;
-    const ui = st ? ` · ${fmtNum(st.u_act, 1)} V · ${fmtNum(st.i_act_peak, 2)} A` : "";
+    const ui = st ? ` · 電壓 U ${fmtNum(st.u_act, 1)} V · 電流 I ${fmtNum(st.i_act_peak, 2)} A` : "";
     let main;
     if (e.stage === "on") {
       main = `輸出中 · ${fmtClock(Math.min(e.duration_s, now - e.output_on_at))} / ${fmtClock(e.duration_s)}${ui} · ${MODE_NAMES[e.recipe.mode] || e.recipe.mode}`;
@@ -1279,7 +1279,7 @@
     if (r.readback) {
       const c = r.readback.channels || {}, a = r.readback.actual || {};
       row(true, "電源讀回", [33, 140, 1100, 51130, 51131, 650].map((ch) => `ch${ch} = ${c[ch] == null ? "--" : c[ch]}`).join(" · ")
-        + ` · 電源回報實際頻率 ${fmtNum(a.freq_hz, 0)} Hz、實際佔空比 ${fmtNum(a.duty_pct, 1)} %`);
+        + ` · 電源回報實際頻率 f ${fmtNum(a.freq_hz, 0)} Hz、實際佔空比 ${fmtNum(a.duty_pct, 1)} %`);
     }
     (r.system_errors || []).forEach((e) => row(false, "系統", e));
     // 收合的設定出問題：自動展開對應區塊，讓人看得到要改哪裡
@@ -1322,13 +1322,13 @@
     const r0 = body.recipe;
     const ok = await dialog({
       title: "確認輸出高壓",
-      lead: "即將開始正式實驗並輸出高壓（最高 1000 V / 25 A / 10 kW）。請確認電解槽與安全防護都已就緒。",
+      lead: "即將開始正式實驗並輸出高壓（最高 電壓 U 1000 V / 電流 I 25 A / 功率 P 10 kW）。請確認電解槽與安全防護都已就緒。",
       items: [`模式：${MODE_NAMES[r0.mode] || r0.mode}`, r0.mode === "bipulse"
-        ? `頻率 ${r0.freq_hz} Hz · 正向導通 ${r0.pos_pct} % · 負向導通 ${r0.neg_pct} %`
-        : `頻率 ${r0.freq_hz} Hz · 佔空比 ${r0.duty_pct} %`,
-        r0.control === "cv" ? `控制方式：定電壓（U = ${r0.u} V，I 不限＝${r0.i} A）`
-          : `控制方式：定電流（I = ${r0.i} A，U 不限＝${r0.u} V）`,
-        `功率上限 P：${r0.p} kW`,
+        ? `頻率 f ${r0.freq_hz} Hz · 正向佔空比 ${r0.pos_pct} % · 負向佔空比 ${r0.neg_pct} %`
+        : `頻率 f ${r0.freq_hz} Hz · 佔空比 ${r0.duty_pct} %`,
+        r0.control === "cv" ? `控制方式：定電壓（電壓設定 U ${r0.u} V，電流 I 不限＝${r0.i} A）`
+          : `控制方式：定電流（電流設定 I ${r0.i} A，電壓 U 不限＝${r0.u} V）`,
+        `功率上限 P ${r0.p} kW`,
         `實驗時間：${fmtSpan(parseExpTime(body.exp_time))}`,
         `先錄 ${chk.baseline_s} 秒基線（電源關閉）才開啟輸出；時間到自動關閉輸出並停止錄製`],
       question: "確定開始？", okText: "確認輸出高壓", cancelText: "取消",
@@ -1473,13 +1473,13 @@
   }
 
   // 雙極：正向 a %、負向 b % → 占空比與關斷時間（週期的 %）。
-  // 必須與 sensors/truplasma_package/params.py 的 bipulse_timing 一致；【假設 Off 單位為週期 %，未在真機驗證】。
+  // 必須與 sensors/truplasma_package/params.py 的 bipulse_timing 一致；Off 為週期 %、每週期兩段（手冊 p.26），尚未用示波器實測。
   function bipulseTiming(a, b) {
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: "請輸入正向／負向導通 %" };
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: "請輸入正向／負向佔空比 %" };
     const total = a + b;
-    if (!Number.isInteger(total) || total % 2) return { error: `正向 + 負向導通 % 必須是偶數（目前 ${total}）` };
+    if (!Number.isInteger(total) || total % 2) return { error: `正向＋負向合計要是偶數（目前 ${total} %）：剩下的時間要平分成兩段關斷` };
     const off = (100 - total) / 2, duty = a + off;
-    if (off < 1 || off > 20) return { error: `正向 + 負向導通 % 需在 60–98 之間（目前 ${total}，關斷時間 ${off} % 超出 1–20）` };
+    if (off < 1 || off > 20) return { error: `正向＋負向合計要在 60–98 %（目前 ${total} %）：這台電源每段關斷最多 20 %、最少 1 %（手冊 p.26）` };
     if (duty < 1 || duty > 99) return { error: `換算後占空比 ${duty} % 超出 1–99` };
     return { duty, off };
   }
@@ -1496,20 +1496,15 @@
     dutyEl.textContent = "";
     dutyEl.hidden = !bi;
     if (!bi) return;
+    const line = (text, cls) => { const el = document.createElement("span"); el.className = "pulse-line" + (cls ? " " + cls : ""); el.textContent = text; dutyEl.append(el); return el; };
     const t = bipulseTiming(r.pos_pct, r.neg_pct);
-    if (t.error) { dutyEl.append(t.error); }
-    else {
-      const us = (pct) => (r.freq_hz > 0 ? ` ${(1000000 / r.freq_hz * pct / 100).toFixed(1)} µs` : "");
-      dutyEl.append(`換算：占空比 ${t.duty} %、關斷時間 ${t.off} %（每次關斷${us(t.off) || " --"}）`
-        + ` · 正向導通${us(r.pos_pct) || " --"} / 負向導通${us(r.neg_pct) || " --"}（換算公式未在真機驗證）`);
-    }
-    dutyEl.append(" · Off Time（ch650）讀回 ");
-    const off = channels && channels["650"] != null ? channels["650"] : psu.params[650];
-    const span = document.createElement("span");
-    if (off == null) span.textContent = "--（尚未讀取）";
-    else if (off < 1 || off > 20) { span.textContent = `${off} %（超出手冊範圍 1–20）`; span.dataset.level = "warn"; }
-    else span.textContent = `${off} %`;
-    dutyEl.append(span);
+    if (t.error) { line(t.error).dataset.level = "warn"; return; }
+    const period = r.freq_hz > 0 ? 1000000 / r.freq_hz : null;
+    const us = (pct) => (period ? `${(period * pct / 100).toFixed(1)} µs` : "--");
+    // 一個週期依序：正向 → 停 → 負向 → 停（手冊 p.26）。電源存的 Off Time 只有異常時才提示
+    line(`佔空比 = 該方向通電時間佔一個週期的比例。每個週期 ${us(100)}：正向通電 ${us(r.pos_pct)} → 停 ${us(t.off)} → 負向通電 ${us(r.neg_pct)} → 停 ${us(t.off)}`);
+    const read = channels && channels["650"] != null ? channels["650"] : psu.params[650];
+    if (read != null && (read < 1 || read > 20)) line(`電源目前存的停止時間 ${read} % 超出手冊範圍 1–20 %，檢驗時會改寫`).dataset.level = "warn";
   }
 
   function modeName(mode) {
@@ -1543,7 +1538,7 @@
       const warn = !invalid && (id === "sp-u" || id === "sp-i") && value === 0;
       const showValidation = !!(cur && psu.snap.connected);
       el.dataset.level = showValidation ? (invalid ? "error" : warn ? "warn" : "") : "";
-      el.textContent = !showValidation ? "" : invalid ? (id === "sp-p" && value === 0 ? "功率上限必須大於 0，否則電源不會輸出" : Number.isFinite(high) ? `請輸入 ${low}–${high} 的數值` : "尚未取得設定範圍") : warn ? "為 0 時不會有輸出" : "";
+      el.textContent = !showValidation ? "" : invalid ? (id === "sp-p" && value === 0 ? "功率上限 P 必須大於 0，否則電源不會輸出" : Number.isFinite(high) ? `請輸入 ${low}–${high} 的數值` : "尚未取得設定範圍") : warn ? "為 0 時不會有輸出" : "";
       $("psu-" + id).setAttribute("aria-invalid", showValidation && invalid ? "true" : "false");
       valid = valid && !invalid;
     });
@@ -1603,7 +1598,7 @@
       $("psu-avg-u" + pole).textContent = inactive ? "—" : fmtNum(meas[u], 1);
       $("psu-avg-i" + pole).textContent = inactive ? "—" : fmtNum(meas[i], 2);
     }
-    $("psu-summary").textContent = `總功率 ${fmtNum(st && st.p_act, 3)} kW · 調節 ${(st && st.regulation) || "—"} · 實際頻率 ${fmtNum(meas.Freq_Hz, 0)} Hz · 實際佔空比 ${fmtNum(meas.Duty_pct, 1)} % · 電弧 ${st ? st.arc_rate : "—"} 次/秒`;
+    $("psu-summary").textContent = `總功率 P ${fmtNum(st && st.p_act, 3)} kW · 調節 ${(st && st.regulation) || "—"} · 實際頻率 f ${fmtNum(meas.Freq_Hz, 0)} Hz · 實際佔空比 ${fmtNum(meas.Duty_pct, 1)} % · 電弧 ${st ? st.arc_rate : "—"} 次/秒`;
     $("psu-u").textContent = fmtNum(st && st.u_act, 1); $("psu-i").textContent = fmtNum(st && st.i_act_peak, 2);
     $("psu-arc-counts").textContent = st && st.arc_counts ? Object.entries(st.arc_counts).map(([k,v]) => `${k} ${v}`).join(" · ") : "";
     const tb = $("psu-meas").tBodies[0], keys = Object.keys(meas).sort();
@@ -1725,7 +1720,7 @@
 
   async function onPsuApply() {
     const next = recipeInputs(), cur = currentRecipe();
-    const labels = { mode: "模式", freq_hz: "頻率 Hz", duty_pct: "佔空比 %", pos_pct: "正向導通 %", neg_pct: "負向導通 %", u: "電壓 V", i: "電流 A", p: "功率 kW" };
+    const labels = { mode: "模式", freq_hz: "頻率 f（Hz）", duty_pct: "佔空比（%）", pos_pct: "正向佔空比（%）", neg_pct: "負向佔空比（%）", u: "電壓 U（V）", i: "電流 I（A）", p: "功率 P（kW）" };
     const changes = recipeChanges(next, cur);
     if ($("psu-apply").disabled || !changes.length) return;
     const items = changes.map((k) => `${labels[k]}：${k === "mode" ? modeName(cur[k]) : (cur[k] ?? "—")} → ${k === "mode" ? modeName(next[k]) : next[k]}`);
@@ -1743,10 +1738,10 @@
     }
     // 電源 CSV 只在實驗錄製中才寫；沒在錄就開輸出，這段電壓電流不會存檔也無法補錄
     const recording = !!(state && state.phase === "running");
-    const items = [`電壓設定 ${sp.u} V`, `電流設定 ${sp.i} A`, `功率設定 ${sp.p} kW`];
+    const items = [`電壓設定 U ${sp.u} V`, `電流設定 I ${sp.i} A`, `功率上限 P ${sp.p} kW`];
     if (!recording) items.push("⚠ 目前沒有在錄製實驗：輸出期間的電壓電流不會存檔");
     const ok = await dialog({
-      title: "開啟輸出", lead: "即將開啟高壓輸出（最高 1000 V / 25 A / 10 kW）。請確認電解槽與安全防護都已就緒。",
+      title: "開啟輸出", lead: "即將開啟高壓輸出（最高 電壓 U 1000 V / 電流 I 25 A / 功率 P 10 kW）。請確認電解槽與安全防護都已就緒。",
       items,
       question: recording ? "確定要開啟輸出？" : "沒有錄製也要開啟輸出？（要錄製請先取消，開始監測）",
       okText: recording ? "開啟輸出" : "仍然開啟輸出", cancelText: "取消",

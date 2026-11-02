@@ -2006,7 +2006,7 @@ class MonitorService:
             if control is not None:
                 recipe["control"] = control
             if recipe["u"] <= 0 or recipe["i"] <= 0:
-                raise ValueError("電壓上限與電流上限都必須大於 0，否則電源不會輸出")
+                raise ValueError("電壓上限 U 與電流上限 I 都必須大於 0，否則電源不會輸出")
         except (ValueError, TypeError, KeyError) as e:
             errors.append(f"電源參數錯誤：{e}")
             recipe = None
@@ -2036,7 +2036,7 @@ class MonitorService:
         mismatch = recipe_readback_errors(readback, recipe)
         snap = psu.snapshot()
         sp, meas = snap["setpoints"], snap["measurements"]
-        for k, label in (("u", "電壓上限"), ("i", "電流上限"), ("p", "功率上限")):
+        for k, label in (("u", "電壓上限 U"), ("i", "電流上限 I"), ("p", "功率上限 P")):
             if abs(sp[k] - recipe[k]) > 1e-6:
                 mismatch.append(f"{label}讀回 {sp[k]:g}，應為 {recipe[k]:g}")
         self.psu_recipe_errors = mismatch
