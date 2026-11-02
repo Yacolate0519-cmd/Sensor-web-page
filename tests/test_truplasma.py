@@ -205,9 +205,13 @@ def test_bipulse_timing():
     from sensors.truplasma_package.params import bipulse_timing
     assert bipulse_timing(60, 20) == (70, 10)
     assert bipulse_timing(45, 45) == (50, 5)
-    for a, b in ((60, 21), (50, 50), (20, 20), (99, 1), (0, 80), (60, "x")):
+    assert bipulse_timing(20, 20) == (50, 30)  # off>20 超出手冊但放行（2026-11-02 面板接受 36）
+    assert bipulse_timing(1, 1) == (50, 49)
+    for a, b in ((60, 21), (50, 50), (99, 1), (0, 80), (-5, 25), (60, "x")):
         with pytest.raises(ValueError):
-            bipulse_timing(a, b)  # 奇數、off=0、off>20、非正數、非數字（換算後 duty 恆在 1–99，上限檢查是防線）
+            bipulse_timing(a, b)  # 奇數、合計 100（off=0）、非正數、非數字（換算後 duty 恆在 1–99，上限檢查是防線）
+    from sensors.truplasma_package.params import off_time_exceeds_manual
+    assert off_time_exceeds_manual(30) and not off_time_exceeds_manual(20) and not off_time_exceeds_manual(None)
 
 
 def test_plan_recipe_bipulse_writes_off_time():
@@ -217,6 +221,7 @@ def test_plan_recipe_bipulse_writes_off_time():
     assert (51131, 70) in plan and (650, 10) in plan
     assert plan_recipe({33: 32, 140: 0, 51130: 5, 51131: 70, 650: 10}, base) == []
     assert plan_recipe({33: 32, 140: 0, 51130: 5, 51131: 70, 650: 80}, base) == [(650, 10)]
+    assert (650, 30) in plan_recipe({}, {**base, "pos_pct": 20, "neg_pct": 20})
     for change in ({"neg_pct": 21}, {"neg_pct": 40}, {"pos_pct": 0}, {"pos_pct": 99}):
         with pytest.raises(ValueError):
             plan_recipe({}, {**base, **change})

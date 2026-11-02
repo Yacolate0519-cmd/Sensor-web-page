@@ -1319,7 +1319,7 @@
       if (!go) return;
       body.confirm_missing = true;
     }
-    const r0 = body.recipe;
+    const r0 = body.recipe, t0 = r0.mode === "bipulse" ? bipulseTiming(r0.pos_pct, r0.neg_pct) : null;
     const ok = await dialog({
       title: "確認輸出高壓",
       lead: "即將開始正式實驗並輸出高壓（最高 電壓 U 1000 V / 電流 I 25 A / 功率 P 10 kW）。請確認電解槽與安全防護都已就緒。",
@@ -1328,6 +1328,7 @@
         : `頻率 f ${r0.freq_hz} Hz · 佔空比 ${r0.duty_pct} %`,
         r0.control === "cv" ? `控制方式：定電壓（電壓設定 U ${r0.u} V，電流 I 不限＝${r0.i} A）`
           : `控制方式：定電流（電流設定 I ${r0.i} A，電壓 U 不限＝${r0.u} V）`,
+        ...(t0 && t0.unverified ? [`注意：${offUnverifiedText(t0.off)}`] : []),
         `功率上限 P ${r0.p} kW`,
         `實驗時間：${fmtSpan(parseExpTime(body.exp_time))}`,
         `先錄 ${chk.baseline_s} 秒基線（電源關閉）才開啟輸出；時間到自動關閉輸出並停止錄製`],
@@ -1474,14 +1475,16 @@
 
   // 雙極：正向 a %、負向 b % → 占空比與關斷時間（週期的 %）。
   // 必須與 sensors/truplasma_package/params.py 的 bipulse_timing 一致；Off 為週期 %、每週期兩段（手冊 p.26），尚未用示波器實測。
+  const OFF_TIME_MANUAL_MAX = 20; // 手冊 ch650 Off Time 範圍 0–20 %；面板實測可接受更大值，但波形尚未用示波器驗證
+  const offUnverifiedText = (off) => `停止時間 ${off} % 超出手冊範圍（0–20 %）：面板實測可接受，但實際波形尚未用示波器驗證`;
   function bipulseTiming(a, b) {
     if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: "請輸入正向／負向佔空比 %" };
     const total = a + b;
     if (!Number.isInteger(total) || total % 2) return { error: `正向＋負向合計要是偶數（目前 ${total} %）：剩下的時間要平分成兩段關斷` };
     const off = (100 - total) / 2, duty = a + off;
-    if (off < 1 || off > 20) return { error: `正向＋負向合計要在 60–98 %（目前 ${total} %）：這台電源每段關斷最多 20 %、最少 1 %（手冊 p.26）` };
+    if (off < 1 || off > 49) return { error: `正向＋負向合計要在 2–98 % 之間的偶數（目前 ${total} %）：每段關斷最少 1 %、最多 49 %` };
     if (duty < 1 || duty > 99) return { error: `換算後占空比 ${duty} % 超出 1–99` };
-    return { duty, off };
+    return { duty, off, unverified: off > OFF_TIME_MANUAL_MAX };
   }
 
   // 頻率／導通欄位下方的提示（正式流程與手動面板共用）：低頻模式、雙極換算結果、Off Time（ch650）讀回。
@@ -1503,8 +1506,9 @@
     const us = (pct) => (period ? `${(period * pct / 100).toFixed(1)} µs` : "--");
     // 一個週期依序：正向 → 停 → 負向 → 停（手冊 p.26）。電源存的 Off Time 只有異常時才提示
     line(`佔空比 = 該方向通電時間佔一個週期的比例。每個週期 ${us(100)}：正向通電 ${us(r.pos_pct)} → 停 ${us(t.off)} → 負向通電 ${us(r.neg_pct)} → 停 ${us(t.off)}`);
+    if (t.unverified) line(offUnverifiedText(t.off)).dataset.level = "warn";
     const read = channels && channels["650"] != null ? channels["650"] : psu.params[650];
-    if (read != null && (read < 1 || read > 20)) line(`電源目前存的停止時間 ${read} % 超出手冊範圍 1–20 %，檢驗時會改寫`).dataset.level = "warn";
+    if (read != null && (read < 1 || read > 49)) line(`電源目前存的停止時間 ${read} % 超出可用範圍 1–49 %，檢驗時會改寫`).dataset.level = "warn";
   }
 
   function modeName(mode) {

@@ -10,6 +10,14 @@ RECIPE_LIMITS = {"u": 1000.0, "i": 25.0, "p_default": 10.0, "p": 10.0}
 
 U_NOM, I_NOM, P_NOM = 1000.0, 25.0, 10.0  # V, A, kW (4010 rating, manual p.16)
 
+OFF_TIME_MANUAL_MAX = 20  # 手冊 ch650 Off Time 範圍 0–20 %
+OFF_TIME_MAX = 49         # 本程式接受的上限：a、b > 0 時 off = (100−a−b)/2 ≤ 49
+
+
+def off_time_exceeds_manual(off):
+    """Off Time（週期 %）是否超出手冊範圍（>20）：面板可接受，但波形尚未用示波器驗證。"""
+    return off is not None and off > OFF_TIME_MANUAL_MAX
+
 
 @dataclass(frozen=True)
 class Param:
@@ -36,7 +44,7 @@ PARAMS = [
           note="bit mask：0 DC-A、1 DC-B、2 MonoPulse-A、3 MonoPulse-B、4 Full、5 BiPulse、6 Trapez、7 Step。寫入方式未在實機驗證"),
     Param(51130, "float", "頻率設定值", "pulse", "kHz", 0.1, 100),
     Param(51131, "float", "佔空比設定值", "pulse", "%", 1, 99),
-    Param(650, "byte", "Off Time", "pulse", "%", 1, 20, note="10/22 讀到 80，超出手冊範圍，意義待確認"),
+    Param(650, "byte", "Off Time", "pulse", "%", 1, OFF_TIME_MAX, note="手冊範圍 0–20；2026-11-02 面板實測接受 36；10/22 讀到 80（意義待確認）"),
     Param(140, "byte", "低頻模式", "pulse", fmt="bool"),
     Param(1100, "int", "低頻設定值", "pulse", "Hz", 1, 1000),
     Param(652, "byte", "上升時間 A", "pulse", "%", 0, 30),
@@ -135,9 +143,12 @@ def bipulse_timing(pos_pct, neg_pct):
 
     【假設，未在真機驗證】手冊 p.26：TA = Duty·T − Off、TB = (1−Duty)·T − Off，一個週期是
     正向→關斷→負向→關斷。這裡假設 ch650 的單位是「週期的 %」，於是
-        off  = (100 − a − b) / 2     （必須是 1–20 的整數，ch650 是 byte）
+        off  = (100 − a − b) / 2     （必須是 1–49 的整數，ch650 是 byte）
         duty = a + off               （必須在 1–99）
     實機 ch650 曾讀到 80（超出手冊範圍），單位可能不是這個假設；上機驗證後只需改這個函式。
+    2026-11-02：手冊寫 Off Time 0–20 %，但面板接受並存入 36（讀回 ch650=36），所以 20 不是硬限制；
+    實驗室要做 20/20（off=30）。目前「假設公式在 off>20 時仍成立」，尚未用示波器驗證；
+    off>20 仍放行，由 off_time_exceeds_manual(off) 判斷並在網頁／實驗紀錄標「超出手冊範圍」。
     """
     try:
         a, b = float(pos_pct), float(neg_pct)
@@ -151,8 +162,8 @@ def bipulse_timing(pos_pct, neg_pct):
     if total != int(total) or int(total) % 2:
         raise ValueError(f"正向 + 負向導通 % 必須是偶數（目前 {total:g}），關斷時間才會是整數")
     off = (100 - total) / 2
-    if not 1 <= off <= 20:
-        raise ValueError(f"正向 + 負向導通 % 需在 60–98 之間（目前 {total:g}，關斷時間 {off:g} % 超出 1–20）")
+    if not 1 <= off <= OFF_TIME_MAX:
+        raise ValueError(f"正向 + 負向導通 % 需在 2–98 之間的偶數（目前 {total:g}，關斷時間 {off:g} % 超出 1–{OFF_TIME_MAX}）")
     duty = a + off
     if not 1 <= duty <= 99:
         raise ValueError(f"換算後佔空比 {duty:g} % 超出 1–99")

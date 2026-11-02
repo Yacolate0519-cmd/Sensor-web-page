@@ -69,7 +69,7 @@ from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import list_candidate_ports  # noqa: E402
 from temp_py_package.reader import check_port_present, find_temperature_port, read_tx600n_diag
 from truplasma_package import MEASUREMENTS, PARAMS, SimTruPlasma, TruPlasmaController, open_serial  # noqa: E402
-from truplasma_package.params import RECIPE_LIMITS, plan_recipe  # noqa: E402
+from truplasma_package.params import RECIPE_LIMITS, bipulse_timing, off_time_exceeds_manual, plan_recipe  # noqa: E402
 from truplasma_package.protocol import ALARM_TEXT, PULSE_MODES, TEST_VERSION_CODES  # noqa: E402
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
@@ -2005,6 +2005,10 @@ class MonitorService:
                       "u": float(r["u"]), "i": float(r["i"]), "p": float(r.get("p", RECIPE_LIMITS["p_default"]))}
             if control is not None:
                 recipe["control"] = control
+            # Off Time（ch650）超出手冊 0–20 % 時標記「未驗證」：面板可接受，但實際波形尚未用示波器驗證
+            off = bipulse_timing(recipe["pos_pct"], recipe["neg_pct"])[1] if recipe["mode"] == "bipulse" else None
+            recipe["off_pct"] = off
+            recipe["off_time_unverified"] = off_time_exceeds_manual(off)
             if recipe["u"] <= 0 or recipe["i"] <= 0:
                 raise ValueError("電壓上限 U 與電流上限 I 都必須大於 0，否則電源不會輸出")
         except (ValueError, TypeError, KeyError) as e:
@@ -2045,8 +2049,9 @@ class MonitorService:
         # actual：電源回報的實際頻率／佔空比（ch51140／51141，每輪心跳輪詢的量測值）
         return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"],
                 **({"control": recipe["control"]} if "control" in recipe else {}),
-                **({"pos_pct": recipe["pos_pct"], "neg_pct": recipe["neg_pct"]} if recipe["mode"] == "bipulse"
-                   else {"duty_pct": recipe["duty_pct"]}),
+                **({"pos_pct": recipe["pos_pct"], "neg_pct": recipe["neg_pct"],
+                    "off_pct": recipe.get("off_pct"), "off_time_unverified": recipe.get("off_time_unverified", False)}
+                   if recipe["mode"] == "bipulse" else {"duty_pct": recipe["duty_pct"]}),
                 "setpoints": dict(sp), "read_at": iso_now(),
                 "channels": {str(ch): readback.get(ch) for ch in RECIPE_READBACK_CHANNELS},
                 "actual": {"freq_hz": meas.get("Freq_Hz"), "duty_pct": meas.get("Duty_pct")}}
@@ -2338,6 +2343,8 @@ class MonitorService:
         if missing != chk["missing"]:
             recorder.update(missing_sensors=missing)
         self._exp_update(exp)
+        if recipe.get("off_time_unverified"):
+            slog(WARN, PSU_NAME, f"雙極停止時間 Off Time {recipe['off_pct']} % 超出手冊範圍 0–20 %：面板實測可接受，但實際波形尚未用示波器驗證")
         slog(INFO, SRC_SYSTEM, f"正式實驗 {exp['id']} 開始：實驗時間 {duration:g} 秒，基線 {self.exp_baseline_s:g} 秒；"
              f"電源參數 {json.dumps(recipe, ensure_ascii=False)}"
              + (f"；缺少感測器 {'、'.join(m['name'] for m in missing)}（使用者確認仍要開始）" if missing else ""))

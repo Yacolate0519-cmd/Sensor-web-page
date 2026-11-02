@@ -135,6 +135,21 @@ def recipe_body(**kw):
     return dict(body(), recipe=dict(r, **kw))
 
 
+def test_bipulse_off_over_manual_range_passes_and_is_flagged_unverified(svc):
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, pos_pct=20, neg_pct=20)))
+    assert code == 200, res
+    assert res["psu_ok"] and res["can_start"]
+    assert res["recipe"]["off_pct"] == 30 and res["recipe"]["off_time_unverified"] is True
+    assert res["readback"]["channels"]["650"] == 30 and res["readback"]["off_time_unverified"] is True
+
+
+def test_bipulse_off_within_manual_range_not_flagged(svc):
+    res = check_ok(svc)  # 45/45 → off=5
+    assert res["recipe"]["off_pct"] == 5 and res["recipe"]["off_time_unverified"] is False
+    _, recipe, _ = svc._exp_parse(dict(body(), recipe={"mode": "mono_a", "freq_hz": 1000, "duty_pct": 50, "u": 100, "i": 2, "p": 1}))
+    assert recipe["off_pct"] is None and recipe["off_time_unverified"] is False
+
+
 def test_control_cv_floats_current_at_rated_max(svc):
     errors, recipe, _ = svc._exp_parse(recipe_body(control="cv", u=100, i=3))  # 前端送的 i 不被信任
     assert not errors and recipe["control"] == "cv" and recipe["u"] == 100 and recipe["i"] == wm.RECIPE_LIMITS["i"] == 25
