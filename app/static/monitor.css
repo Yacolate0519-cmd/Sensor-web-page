@@ -209,6 +209,7 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .last-result code { font-family: var(--mono); font-size: 11.5px; }
 
 .field-hint b { font-weight: 600; color: var(--text-2); }
+.field-hint[data-level="warn"], .field-hint [data-level="warn"] { color: var(--warn); }
 .field-label .req, .field-hint .req { color: var(--err); font-weight: 600; }
 
 /* ---------- 說明提示（問號圖示 + hover／focus tooltip，純 CSS） ---------- */
@@ -446,7 +447,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 }
 
 .psu-setting-grid small[data-level="error"] { color: var(--err); }
-.psu-setting-grid small[data-level="warn"] { color: var(--warn); }
+.psu-setting-grid small[data-level="warn"], .psu-setting-grid small [data-level="warn"] { color: var(--warn); }
 
 /* ---------- 正式實驗流程 ---------- */
 .topbar-meta { align-items: center; }

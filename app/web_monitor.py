@@ -630,6 +630,20 @@ def iso_now(ts=None):
     return datetime.datetime.fromtimestamp(ts if ts is not None else time.time()).astimezone().isoformat()
 
 
+# 套用配方後讀回比對與顯示的通道：脈衝模式、低頻模式、低頻設定值／頻率設定值、佔空比，加上 Off Time（只顯示，不寫入）
+RECIPE_READBACK_CHANNELS = (33, 140, 1100, 51130, 51131, 650)
+RECIPE_INCOMPLETE = "上次套用配方沒有完成讀回比對（部分參數可能已寫入）"
+
+
+def recipe_readback_errors(readback, recipe):
+    """配方寫入後的讀回比對：回傳不一致的通道（依模式只比對該寫的 ch33/140/1100 或 51130/51131），
+    每項列出通道、寫入值、讀回值。"""
+    names = {p.channel: p.name for p in PARAMS}
+    return [f"{names.get(ch, 'ch' + str(ch))}（ch{ch}）寫入 {value:g}，讀回 "
+            f"{'讀不到' if readback.get(ch, readback.get(str(ch))) is None else f'{readback.get(ch, readback.get(str(ch))):g}'}"
+            for ch, value in plan_recipe(readback, recipe)]
+
+
 def parse_exp_time(value):
     """實驗時間：「分:秒」（例 10:00、1:30）或秒數（例 600）→ 秒（float）；不合法丟 ValueError（中文訊息）。"""
     text = str(value if value is not None else "").strip()
@@ -965,9 +979,9 @@ class MonitorService:
         self.zero_warned = False
 
         # 溫度／距離時間序列（本次監測全程）：[(elapsed 秒, 值或 None), ...]；開始新監測時清空
-        # psu_u_a / psu_u_b：A、B 兩路平均電壓；psu_i：電流（峰值）。只在實驗錄製中且電源已連線時累積
-        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i": []}
-        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i": 0}  # 已透過 SSE 送出的筆數
+        # psu_u_a / psu_u_b、psu_i_a / psu_i_b：A、B 兩路平均電壓與電流（雙極脈衝下 u_act / i_act_peak 會低估）。只在實驗錄製中且電源已連線時累積
+        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i_a": [], "psu_i_b": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i_a": 0, "psu_i_b": 0}  # 已透過 SSE 送出的筆數
 
         # 光譜儀（Optical Spectrum）：波長軸 meta、降採樣歷史（熱圖用）、最新一筆完整解析度（即時光譜用）
         self.opt_meta = None
@@ -991,6 +1005,7 @@ class MonitorService:
         self.run_mode = None          # 目前／上一次錄製的模式：experiment | sensor_test
         self.exp = None               # 目前／上一次正式實驗的流程狀態（dict，見 exp_start）；stage == "done" 表示已結束
         self._check_result = None     # 最近一次「檢驗 Sensor」的結果；開始實驗時使用，開始後清掉（每場都要重新檢驗）
+        self.psu_recipe_errors = []   # 最近一次套用配方的讀回不一致項目；非空時拒絕開啟輸出，直到重新套用且讀回一致
         self.exp_lock = threading.Lock()  # 檢驗與開始互斥（緊急停止不拿這個鎖，任何時候都能立即執行）
         self._estop_lock = threading.RLock()  # 緊急停止「設旗標＋關輸出」與流程「檢查旗標＋開輸出」互斥（只包住不阻塞的呼叫）
         self.exp_baseline_s = EXP_BASELINE_S  # 測試可縮短；預設 5 秒
@@ -1691,8 +1706,8 @@ class MonitorService:
         self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
         self.spec_total = 0
         self.spec_freqs = None
-        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i": []}
-        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i": 0}
+        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i_a": [], "psu_i_b": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i_a": 0, "psu_i_b": 0}
         self.opt_meta = None
         self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
         self.opt_total = 0
@@ -1867,7 +1882,8 @@ class MonitorService:
             rec.write_row("truplasma", row)
         self.add_series_point("psu_u_a", meas.get("Uavg_A_V"))
         self.add_series_point("psu_u_b", meas.get("Uavg_B_V"))
-        self.add_series_point("psu_i", st["i_act_peak"])
+        self.add_series_point("psu_i_a", meas.get("Iavg_A_A"))
+        self.add_series_point("psu_i_b", meas.get("Iavg_B_A"))
 
     def _psu_mark_recorder(self, rec):
         """電源在實驗中途才連線時，補寫裝置與模擬標示（實驗開始時已連線的在 start() 就寫好了）。"""
@@ -1987,6 +2003,7 @@ class MonitorService:
             raise RuntimeError("電源未連線")
         if psu.phase != "idle":
             raise RuntimeError(f"電源目前「{psu.snapshot()['phase_text']}」，參數只能在輸出關閉時寫入")
+        self.psu_recipe_errors = [RECIPE_INCOMPLETE]  # 中途失敗（部分通道可能已寫入）也要擋住開啟輸出
         current = psu.read_params()
         for ch, value in plan_recipe(current, recipe):
             psu.write_param(ch, value)  # write_param 自己會讀回比對，不一致丟 RuntimeError
@@ -1995,18 +2012,20 @@ class MonitorService:
                 raise RuntimeError("電源輸出已開啟，取消寫入")
             psu.set_setpoints(recipe["u"], recipe["i"], recipe["p"])
         readback = psu.read_params()
-        names = {p.channel: p.name for p in PARAMS}
-        mismatch = [f"{names.get(ch, 'ch' + str(ch))}（ch{ch}）讀回 {readback.get(ch)}，應為 {value:g}"
-                    for ch, value in plan_recipe(readback, recipe)]
-        sp = psu.snapshot()["setpoints"]
+        mismatch = recipe_readback_errors(readback, recipe)
+        snap = psu.snapshot()
+        sp, meas = snap["setpoints"], snap["measurements"]
         for k, label in (("u", "電壓上限"), ("i", "電流上限"), ("p", "功率上限")):
             if abs(sp[k] - recipe[k]) > 1e-6:
                 mismatch.append(f"{label}讀回 {sp[k]:g}，應為 {recipe[k]:g}")
+        self.psu_recipe_errors = mismatch
         if mismatch:
-            raise RuntimeError("電源參數寫入後讀回不一致：" + "；".join(mismatch))
+            raise RuntimeError("電源參數寫入後讀回不一致，不能開啟輸出：" + "；".join(mismatch))
+        # actual：電源回報的實際頻率／佔空比（ch51140／51141，每輪心跳輪詢的量測值）
         return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"], "duty_pct": recipe["duty_pct"],
                 "setpoints": dict(sp), "read_at": iso_now(),
-                "channels": {str(ch): readback.get(ch) for ch in (33, 140, 1100, 51130, 51131)}}
+                "channels": {str(ch): readback.get(ch) for ch in RECIPE_READBACK_CHANNELS},
+                "actual": {"freq_hz": meas.get("Freq_Hz"), "duty_pct": meas.get("Duty_pct")}}
 
     def _psu_ready_errors(self):
         """電源能不能開始：已連線、輸出關閉、RS232 控制、Ready、無警報、Interlock 正常、通訊正常。"""
@@ -3377,6 +3396,7 @@ def api_psu_recipe():
         psu = _psu_unlocked()
         if psu.snapshot()["phase"] != "idle":
             raise RuntimeError("參數會寫入電源的 EEPROM，請先關閉輸出再修改")
+        service.psu_recipe_errors = [RECIPE_INCOMPLETE]  # 中途失敗（部分通道可能已寫入）也要擋住開啟輸出
         current = psu.read_params()
         plan = plan_recipe(current, raw)
         written = [psu.write_param(ch, value) for ch, value in plan]
@@ -3387,7 +3407,14 @@ def api_psu_recipe():
             if psu.phase != "idle":
                 raise RuntimeError("參數會寫入電源的 EEPROM，請先關閉輸出再修改")
             setpoints = dict(zip("uip", psu.set_setpoints(raw["u"], raw["i"], raw.get("p", RECIPE_LIMITS["p_default"]))))
-        return {"written": written, "skipped": skipped, "setpoints": setpoints, "params": dict(psu.params)}
+        readback = psu.read_params()
+        service.psu_recipe_errors = recipe_readback_errors(readback, raw)
+        if service.psu_recipe_errors:
+            raise RuntimeError("電源參數寫入後讀回不一致，不能開啟輸出：" + "；".join(service.psu_recipe_errors))
+        meas = psu.snapshot()["measurements"]
+        return {"written": written, "skipped": skipped, "setpoints": setpoints, "params": dict(psu.params),
+                "readback": {str(ch): readback.get(ch) for ch in RECIPE_READBACK_CHANNELS},
+                "actual": {"freq_hz": meas.get("Freq_Hz"), "duty_pct": meas.get("Duty_pct")}}
     return _psu_call(run)
 
 
@@ -3400,6 +3427,8 @@ def api_psu_output():
             raise ValueError("on 必須是 true 或 false")
         psu = _psu_unlocked() if raw["on"] else _psu_connected()  # 實驗中只能關，不能開
         if raw["on"]:
+            if service.psu_recipe_errors:
+                raise RuntimeError("上次套用的電源參數讀回不一致，請重新套用並確認讀回一致：" + "；".join(service.psu_recipe_errors))
             psu.power_on()
         else:
             psu.power_off()

@@ -716,12 +716,13 @@
     color: () => theme.wave, color2: () => theme.fft, unit: "V", minRange: 10, decimals: 1,
   });
   const psuUChartB = { add: (pts) => psuUChart.addB(pts), setAll: (pts) => psuUChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
-  const psuIChart = new SeriesChart($("cv-psu-i"), {
-    labels: ["Time (s)", "PSU Current, peak (A)"],
-    color: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
+  const psuIChart = new DualSeriesChart($("cv-psu-i"), {
+    labels: ["Time (s)", "PSU Current, A / B avg (A)"],
+    color: () => theme.wave, color2: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
   });
+  const psuIChartB = { add: (pts) => psuIChart.addB(pts), setAll: (pts) => psuIChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
   // key 對應 /api/state 的 series；psu_* 不是感測器（沒有 sensors／enabled 項目），renderState 會略過
-  const seriesCharts = { temp: tempChart, distance: distChart, psu_u_a: psuUChart, psu_u_b: psuUChartB, psu_i: psuIChart };
+  const seriesCharts = { temp: tempChart, distance: distChart, psu_u_a: psuUChart, psu_u_b: psuUChartB, psu_i_a: psuIChart, psu_i_b: psuIChartB };
   const optHeat = new SpectrumHeatmap($("cv-opt"));
   const optLive = new LiveSpectrum($("cv-opt-live"), optHeat);
   const charts = [specChart, tempChart, distChart, psuUChart, psuIChart, optHeat, optLive];
@@ -1184,6 +1185,7 @@
     $("step-psu-hint").hidden = labelsOk;
     $("exp-pole-box").hidden = bi;
     $("exp-duty-label").textContent = bi ? "正向 A 佔空比" : "佔空比";
+    renderPulseHints(r, $("exp-freq-hint"), $("exp-duty-hint"), checkResult && checkResult.readback && checkResult.readback.channels);
     $("exp-error").hidden = !(labelsOk && idle && rErrs.length);
     $("exp-error").textContent = rErrs.join("、");
     // 檢驗 Sensor → 開始實驗
@@ -1256,6 +1258,11 @@
       d.append(dot, b, t);
     };
     row(r.psu_ok, "電源", r.psu_ok ? "正常（參數已寫入電源並讀回一致）" : r.psu_errors.join("；"));
+    if (r.readback) {
+      const c = r.readback.channels || {}, a = r.readback.actual || {};
+      row(true, "電源讀回", [33, 140, 1100, 51130, 51131, 650].map((ch) => `ch${ch} = ${c[ch] == null ? "--" : c[ch]}`).join(" · ")
+        + ` · 電源回報實際頻率 ${fmtNum(a.freq_hz, 0)} Hz、實際佔空比 ${fmtNum(a.duty_pct, 1)} %`);
+    }
     (r.system_errors || []).forEach((e) => row(false, "系統", e));
     Object.values(r.sensors).forEach((v) => row(v.ok, v.name, v.ok ? `正常（有效數據 ${v.valid} 筆）` : `${v.reason_label}：${v.detail}`));
   }
@@ -1437,6 +1444,29 @@
     return key === "freq_hz" ? Math.round(a * 10) !== Math.round(b * 10) : Math.abs(a - b) >= 1e-6;
   }
 
+  // 頻率／佔空比欄位下方的提示（正式流程與手動面板共用）：低頻模式、雙極 B = 100 − A、Off Time（ch650）讀回。
+  // channels：最近一次檢驗的讀回值（沒有就用手動面板讀到的 psu.params）
+  function renderPulseHints(r, freqEl, dutyEl, channels, freqBase) {
+    const bi = r.mode === "bipulse";
+    const low = !bi && r.freq_hz > 0 && r.freq_hz <= 1000;
+    const freqParts = [freqBase, low ? "會切換到低頻模式，未在真機驗證" : ""].filter(Boolean);
+    freqEl.textContent = freqParts.join("；");
+    freqEl.dataset.level = low ? "warn" : "";
+    freqEl.hidden = !freqParts.length;
+    dutyEl.textContent = "";
+    dutyEl.hidden = !bi;
+    if (!bi) return;
+    const timing = r.freq_hz > 0
+      ? ` · A ${(1000000 / r.freq_hz * r.duty_pct / 100).toFixed(1)} µs / B ${(1000000 / r.freq_hz * (100 - r.duty_pct) / 100).toFixed(1)} µs` : "";
+    dutyEl.append(`負向 B = ${100 - r.duty_pct} %${timing}（不含 off time，未在真機驗證）· Off Time（ch650）讀回 `);
+    const off = channels && channels["650"] != null ? channels["650"] : psu.params[650];
+    const span = document.createElement("span");
+    if (off == null) span.textContent = "--（尚未讀取）";
+    else if (off < 1 || off > 20) { span.textContent = `${off} %（超出手冊範圍 1–20）`; span.dataset.level = "warn"; }
+    else span.textContent = `${off} %`;
+    dutyEl.append(span);
+  }
+
   function modeName(mode) {
     return ({ mono_a: "單極 A", mono_b: "單極 B", bipulse: "雙極" })[mode]
       || psu.modes[Math.log2(psu.params[33])] || "未知";
@@ -1449,9 +1479,8 @@
   function updateRecipe() {
     const r = recipeInputs(), bi = r.mode === "bipulse";
     $("psu-pole-box").hidden = bi;
-    $("psu-freq-hint").textContent = bi ? "1000–50000 Hz" : "1–100000 Hz；1000 Hz 以下自動使用低頻模式";
     $("psu-duty-label").textContent = bi ? "正向 A 佔空比" : "佔空比";
-    $("psu-duty-hint").textContent = bi && r.freq_hz > 0 ? `負向 B = ${100 - r.duty_pct} % · A ${(1000000 / r.freq_hz * r.duty_pct / 100).toFixed(1)} µs / B ${(1000000 / r.freq_hz * (100-r.duty_pct) / 100).toFixed(1)} µs（不含 off time）` : "";
+    renderPulseHints(r, $("psu-freq-hint"), $("psu-duty-hint"), null, bi ? "1000–50000 Hz" : "1–100000 Hz；1000 Hz 以下自動使用低頻模式");
     const cur = psu.snap && Object.keys(psu.params).length ? currentRecipe() : null;
     const note = $("psu-mode-note");
     note.hidden = !cur || cur.mode !== "未知" || psu.params[33] == null;

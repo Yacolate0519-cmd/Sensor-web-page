@@ -140,7 +140,6 @@ def test_manual_output_on_during_exp_start_window(svc, monkeypatch):
 def test_manual_changes_rejected_during_readback(svc, monkeypatch):
     """在 exp_start 做寫入讀回的當下（stage=preparing）就已經鎖住；失敗時釋放鎖定。"""
     client = wm.app.test_client()
-    orig = svc._exp_apply_recipe
     seen = {}
 
     def hooked(recipe):
@@ -279,3 +278,98 @@ def test_sensor_test_marks_passive_psu_logging(svc):
     assert wait_for(lambda: svc.phase == "stopped", 30)
     doc = exp_json(rec)
     assert doc["mode"] == "sensor_test" and doc["psu_logging"] == "passive" and doc["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# 第 2 輪：配方讀回通道、不一致擋開啟輸出、電流 A/B 曲線
+# ---------------------------------------------------------------------------
+def test_check_readback_channels_and_actual(svc):
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, duty_pct=40)))
+    assert code == 200 and res["can_start"], res
+    rb = res["readback"]
+    assert set(rb["channels"]) == {"33", "140", "1100", "51130", "51131", "650"}
+    assert rb["channels"]["33"] == 32 and rb["channels"]["140"] == 0
+    assert rb["channels"]["51130"] == pytest.approx(5.0) and rb["channels"]["51131"] == pytest.approx(40)
+    assert rb["channels"]["650"] is not None  # Off Time 只讀回顯示，不寫入
+    assert wait_for(lambda: svc.psu.snapshot()["measurements"].get("Freq_Hz") == pytest.approx(5000), 3)
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, duty_pct=40)))
+    assert res["readback"]["actual"] == {"freq_hz": pytest.approx(5000), "duty_pct": pytest.approx(40)}
+    assert svc.psu_recipe_errors == []
+
+
+def test_check_low_frequency_unipolar_readback(svc):
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, mode="mono_a", freq_hz=500)))
+    assert code == 200 and res["can_start"], res
+    ch = res["readback"]["channels"]
+    assert ch["33"] == 4 and ch["140"] == 1 and ch["1100"] == 500
+
+
+def bad_readback(svc, monkeypatch, ch=51131, value=12.5):
+    """讓最後的讀回少了某個通道的寫入結果（模擬電源沒有真的套用）。"""
+    orig = svc.psu.read_params
+
+    def read_params(*a, **k):
+        out = dict(orig(*a, **k))
+        out[ch] = value
+        return out
+    monkeypatch.setattr(svc.psu, "read_params", read_params)
+    return orig
+
+
+def test_check_readback_mismatch_blocks_start_and_output(svc, monkeypatch):
+    client = wm.app.test_client()
+    svc.psu_connect("SIM")
+    orig = bad_readback(svc, monkeypatch)
+    res, code = svc.exp_check(body())
+    assert code == 200 and not res["can_start"]
+    msg = "；".join(res["psu_errors"])
+    assert "ch51131" in msg and "寫入 50" in msg and "讀回 12.5" in msg and "不能開啟輸出" in msg
+    res, code = svc.exp_start(body(confirm_output=True))
+    assert code == 400 and svc.recorder is None
+    r = client.post("/api/psu/output", json={"on": True})
+    assert r.status_code == 400 and "讀回不一致" in r.get_json()["errors"][0]
+    assert svc.psu.phase == "idle"
+    monkeypatch.setattr(svc.psu, "read_params", orig)  # 讀回恢復一致 → 重新檢驗後解除
+    res, code = svc.exp_check(body())
+    assert res["can_start"] and svc.psu_recipe_errors == []
+
+
+def test_manual_recipe_mismatch_blocks_output(svc, monkeypatch):
+    client = wm.app.test_client()
+    svc.psu_connect("SIM")
+    orig = bad_readback(svc, monkeypatch, ch=33, value=4)
+    r = client.post("/api/psu/recipe", json=RECIPE)
+    assert r.status_code == 400 and "脈衝模式（ch33）寫入 32，讀回 4" in r.get_json()["errors"][0]
+    assert client.post("/api/psu/output", json={"on": True}).status_code == 400
+    monkeypatch.setattr(svc.psu, "read_params", orig)
+    r = client.post("/api/psu/recipe", json=RECIPE)
+    assert r.status_code == 200, r.get_json()
+    data = r.get_json()
+    assert data["readback"]["33"] == 32 and "actual" in data
+    assert client.post("/api/psu/output", json={"on": True}).status_code == 200
+    assert client.post("/api/psu/output", json={"on": False}).status_code == 200
+
+
+def test_partial_recipe_write_blocks_output(svc, monkeypatch):
+    """寫到一半失敗（還沒做最後讀回）也要擋住開啟輸出。"""
+    client = wm.app.test_client()
+    svc.psu_connect("SIM")
+
+    def fail(ch, value):
+        raise RuntimeError("模擬寫入失敗")
+    monkeypatch.setattr(svc.psu, "write_param", fail)
+    r = client.post("/api/psu/recipe", json=dict(RECIPE, freq_hz=7000))
+    assert r.status_code == 400
+    r = client.post("/api/psu/output", json={"on": True})
+    assert r.status_code == 400 and wm.RECIPE_INCOMPLETE in r.get_json()["errors"][0]
+
+
+def test_current_series_are_a_b_averages(svc):
+    start(svc, exp_time="2")
+    assert wait_for(lambda: svc.exp["stage"] == "on", 15)
+    assert wait_for(lambda: any(v for _, v in svc.series["psu_i_a"]), 5)
+    assert "psu_i" not in svc.series and {"psu_u_a", "psu_u_b", "psu_i_a", "psu_i_b"} <= set(svc.series)
+    # 雙極 50 %：模擬器 A、B 各分一半電流
+    a = [v for _, v in svc.series["psu_i_a"] if v]
+    b = [v for _, v in svc.series["psu_i_b"] if v]
+    assert a and b and a[-1] == pytest.approx(b[-1], rel=0.2)

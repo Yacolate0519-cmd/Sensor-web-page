@@ -74,8 +74,8 @@
             <div class="seg"><label><input type="radio" name="exp-pole" value="a" checked><span>A</span></label><label><input type="radio" name="exp-pole" value="b"><span>B</span></label></div>
           </div>
           <div class="grid-2">
-            <label class="field"><span class="field-label">頻率</span><div class="input-unit"><input id="exp-freq" inputmode="decimal" value="1000"><span>Hz</span></div></label>
-            <label class="field"><span class="field-label" id="exp-duty-label">正向 A 佔空比</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"><span>%</span></div></label>
+            <label class="field"><span class="field-label">頻率</span><div class="input-unit"><input id="exp-freq" inputmode="decimal" value="1000"><span>Hz</span></div><small class="field-hint" id="exp-freq-hint" hidden></small></label>
+            <label class="field"><span class="field-label" id="exp-duty-label">正向 A 佔空比</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"><span>%</span></div><small class="field-hint" id="exp-duty-hint" hidden></small></label>
             <label class="field"><span class="field-label">電壓上限 U <b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"><span>V</span></div></label>
             <label class="field"><span class="field-label">電流上限 I <b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"><span>A</span></div></label>
             <label class="field"><span class="field-label">功率上限 P</span><div class="input-unit"><input id="exp-p" inputmode="decimal" value="10"><span>kW</span></div></label>
@@ -304,7 +304,7 @@
           <div class="canvas-wrap"><canvas id="cv-psu-u"></canvas></div>
         </figure>
         <figure class="chart chart-psu">
-          <figcaption><h3>PSU Current (peak)（電源電流峰值） <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
+          <figcaption><h3>PSU Current A / B（電源電流，正向 A／負向 B 平均） <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-psu-i"></canvas></div>
         </figure>
       </section>
