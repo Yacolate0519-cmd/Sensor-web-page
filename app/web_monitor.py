@@ -160,6 +160,30 @@ STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTER
                 "sighup": "關閉終端機視窗", "console_close": "關閉主控台視窗",
                 "error": "錯誤", "timeout": "計時結束"}
 
+# 正式實驗流程（docs/plans/experiment-ux-flow.md「已決定（2026-10-31）」）：
+# 標籤 → 電源參數＋實驗時間 → 檢驗 Sensor（試收）→ 確認 → 伺服器端依序：開始錄製 → 基線 → 主繼電器 → 輸出 ON → 計時
+EXP_BASELINE_S = 5.0             # 開始錄製後、送出電源開啟前的基線秒數（電源關閉）
+SENSOR_CHECK_S = 3.0             # 「檢驗 Sensor」試收秒數
+SENSOR_CHECK_INIT_GRACE_S = 5.0  # 試收時間到時仍在初始化（例如測距儀 ABLE 約 2.7 秒）的感測器最多再等幾秒
+EXP_OUTPUT_ON_TIMEOUT_S = 25.0   # 送出開啟後多久沒進入「輸出中」就放棄（controller 自己另有繼電器 10 秒、輸出 5 秒逾時）
+EXP_OFF_TIMEOUT_S = 8.0          # 結束時等電源回報輸出與主繼電器都關閉的上限，逾時改送緊急關閉
+EXP_MAX_S = 24 * 3600            # 實驗時間上限
+CHECK_VALID_S = 300              # 「檢驗 Sensor」結果的有效期限；超過就要重新檢驗
+RUN_MODES = {"experiment": "正式實驗", "sensor_test": "Sensor 測試模式（非正式實驗，不控制電源）"}
+# 正式實驗的結果標記（寫進 experiment_<id>.json 的 result.code）
+EXP_RESULTS = {
+    "completed": "完成",
+    "aborted_user": "中止（使用者）",
+    "aborted_psu_alarm": "中止（電源警報）",
+    "aborted_interlock": "中止（Interlock）",
+    "aborted_comm_lost": "中止（通訊中斷）",
+    "aborted_psu_start_failed": "中止（電源無法開啟輸出）",
+    "aborted_psu_off": "中止（電源自行關閉輸出）",
+    "aborted_system": "中止（程式關閉或錄製被外部停止）",
+}
+# 實驗中（正式實驗未結束前）不能做的電源操作的錯誤訊息
+EXP_PSU_LOCKED = "正式實驗進行中，電源參數與輸出已由實驗流程鎖定；要停止請按「緊急停止」或「結束實驗」"
+
 # 感測器狀態的原因代碼（前端 monitor.js 的 REASON_LABELS 要與此一致）
 R_IDLE, R_INIT, R_OK, R_DISABLED = "idle", "init", "ok", "disabled"
 R_DRIVER, R_NOT_FOUND, R_BUSY = "driver", "not_found", "busy"
@@ -606,6 +630,35 @@ def iso_now(ts=None):
     return datetime.datetime.fromtimestamp(ts if ts is not None else time.time()).astimezone().isoformat()
 
 
+def parse_exp_time(value):
+    """實驗時間：「分:秒」（例 10:00、1:30）或秒數（例 600）→ 秒（float）；不合法丟 ValueError（中文訊息）。"""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ValueError("實驗時間為必填（分:秒 或 秒）")
+    try:
+        if ":" in text:
+            m, s = text.split(":", 1)
+            minutes, seconds = int(m.strip() or "0"), float(s.strip())
+            if minutes < 0 or not 0 <= seconds < 60:
+                raise ValueError
+            sec = minutes * 60 + seconds
+        else:
+            sec = float(text)
+    except ValueError:
+        raise ValueError(f"實驗時間格式錯誤：{text}（請輸入 分:秒，例如 10:00，或秒數）") from None
+    if not (math.isfinite(sec) and 0 < sec <= EXP_MAX_S):
+        raise ValueError(f"實驗時間必須大於 0 且不超過 {EXP_MAX_S // 3600} 小時")
+    return sec
+
+
+class _NullRecorder:
+    """「檢驗 Sensor」試收用：介面同 ExperimentRecorder，但什麼都不寫（試收資料不存檔）。"""
+    experiment_id = "SENSOR_CHECK"
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
 # ---------------------------------------------------------------------------
 # 實驗資料落地（邊錄邊寫）
 # ---------------------------------------------------------------------------
@@ -934,6 +987,16 @@ class MonitorService:
         self.psu = TruPlasmaController(self._psu_open_port, on_cycle=self._psu_on_cycle,
                                        on_event=self._psu_on_event, on_alarm=self._psu_on_alarm)
 
+        # 正式實驗流程（exp_check / exp_start / exp_end / exp_estop）
+        self.run_mode = None          # 目前／上一次錄製的模式：experiment | sensor_test
+        self.exp = None               # 目前／上一次正式實驗的流程狀態（dict，見 exp_start）；stage == "done" 表示已結束
+        self._check_result = None     # 最近一次「檢驗 Sensor」的結果；開始實驗時使用，開始後清掉（每場都要重新檢驗）
+        self.exp_lock = threading.Lock()  # 檢驗與開始互斥（緊急停止不拿這個鎖，任何時候都能立即執行）
+        self._estop_lock = threading.RLock()  # 緊急停止「設旗標＋關輸出」與流程「檢查旗標＋開輸出」互斥（只包住不阻塞的呼叫）
+        self.exp_baseline_s = EXP_BASELINE_S  # 測試可縮短；預設 5 秒
+        self.sensor_check_s = SENSOR_CHECK_S  # 測試可縮短；預設 3 秒
+        self._valid_hits = None       # 試收期間各感測器收到有效數據的次數（None＝不在試收）
+
     # ---------------- 事件推送 ----------------
     def subscribe(self):
         # 每個 client 最多暫存 SSE_QUEUE_MAX 筆（約數十秒的圖表資料）；卡住的 client 不會讓記憶體無限成長
@@ -1203,6 +1266,8 @@ class MonitorService:
                 "audio_meta": self.audio_meta(),
                 "spec_total": self.spec_total,
                 "server_time": time.time(),
+                "mode": self.run_mode,
+                "experiment": self._exp_public(),
             }
 
     def full_state(self):
@@ -1277,8 +1342,9 @@ class MonitorService:
             self._pf_raw["spectrometer"] = f"{type(e).__name__}: {e}"
             return False, "• 光譜儀初始化失敗，光譜儀監測將被停用", classify_spectrometer_error(e)
 
-    def validate_params(self, raw):
-        """對應 main_csv.py L312-318 的參數轉型；失敗丟出 ValueError。"""
+    def validate_params(self, raw, require_labels=True):
+        """對應 main_csv.py L312-318 的參數轉型；失敗丟出 ValueError。
+        require_labels=False（Sensor 測試模式）：標籤沒填或不完整時存成 None，不擋開始。"""
         try:
             parsed = {
                 # 使用者要求一律手動停止：不提供執行時間，固定為無限（-1）
@@ -1310,7 +1376,12 @@ class MonitorService:
             raise ValueError("參數輸入錯誤: 光譜儀量測間隔必須大於 0")
         if not 0 < parsed["spec_integration_ms"] <= 10000:
             raise ValueError("參數輸入錯誤: 光譜儀積分時間必須介於 0 與 10000 毫秒之間")
-        parsed["labels"] = self.validate_labels(raw)
+        try:
+            parsed["labels"] = self.validate_labels(raw)
+        except ValueError:
+            if require_labels:
+                raise
+            parsed["labels"] = None
         return parsed
 
     @staticmethod
@@ -1353,7 +1424,8 @@ class MonitorService:
                     f"以預設設定每小時約需 {per_hour / 1024 ** 2:.0f} MB，約可錄 {free / per_hour:.1f} 小時")
         return free, per_hour, warn
 
-    def preflight(self, raw):
+    def preflight(self, raw, require_labels=True, require_sensor=True):
+        """require_sensor=False（正式實驗）：電源才是必要元件，四個感測器都不能用也不算錯誤（只列為缺少）。"""
         warnings = []
         sys_warnings = []  # 不屬於單一感測器的警告（磁碟空間）；感測器的已寫在各自的預檢行，不再重複
         self._pf_raw = {}
@@ -1404,11 +1476,11 @@ class MonitorService:
         self._show_preflight(enabled, diag)
 
         errors = []
-        if not any(enabled.values()):
+        if require_sensor and not any(enabled.values()):
             errors.append("至少需要啟用一個感測器才能開始監測")
         parsed = None
         try:
-            parsed = self.validate_params(raw)
+            parsed = self.validate_params(raw, require_labels)
         except ValueError as e:
             errors.append(str(e))
 
@@ -1471,11 +1543,13 @@ class MonitorService:
         return detail or f"{name}未啟用"
 
     # ---------------- 開始 ----------------
-    def start(self, raw, confirmed):
+    def start(self, raw, confirmed, mode="sensor_test", extra_info=None):
+        """開始錄製感測器（不控制電源）。mode：sensor_test（獨立入口 /api/start）或 experiment（由 exp_start 呼叫，
+        電源由實驗流程控制）；extra_info 併進 experiment_<id>.json。"""
         with self.lock:
-            if self.phase in ("running", "stopping"):
-                return {"ok": False, "errors": ["監測已在進行中"]}, 409
-        pf = self.preflight(raw)
+            if self.phase in ("running", "stopping", "checking"):
+                return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗 Sensor"]}, 409
+        pf = self.preflight(raw, require_labels=mode != "sensor_test", require_sensor=mode != "experiment")
         if not pf["ok"]:
             return {"ok": False, "errors": pf["errors"], "warnings": pf["warnings"]}, 400
         if pf["warnings"] and not confirmed:
@@ -1493,6 +1567,12 @@ class MonitorService:
         audio_sel = str(raw.get("audio_device") or "")
         info = {
             "experiment_id": experiment_id,
+            # 正式實驗與 Sensor 測試模式的資料必須能區分（docs/plans/experiment-ux-flow.md 已釐清 2026-11-02）
+            "mode": mode,
+            "mode_label": RUN_MODES.get(mode, mode),
+            # 電源資料怎麼來的：controlled＝由正式實驗流程控制；passive＝測試模式只被動記錄其他流程（手動模式或上一場）
+            # 已建立的連線，測試模式沒有送任何命令；none＝沒有電源資料
+            "psu_logging": ("controlled" if mode == "experiment" else "passive" if self.psu.connected else "none"),
             "status": "running",
             "start_time": iso_now(start_ts),
             "start_time_unix": start_ts,
@@ -1531,6 +1611,7 @@ class MonitorService:
             "spectrogram": None,
             "spectrometer": None,  # 光譜儀 worker 開啟裝置後補上 metadata（波長範圍、像素數、積分時間…）
         }
+        info.update(extra_info or {})
         recorder = None
         try:
             recorder = ExperimentRecorder(experiment_id, info)
@@ -1553,32 +1634,21 @@ class MonitorService:
             return {"ok": False, "errors": [f"無法建立實驗資料夾或檔案: {e}"]}, 500
 
         with self.lock:
-            if self.phase in ("running", "stopping"):
+            if self.phase in ("running", "stopping", "checking"):
                 recorder.close_all()
                 recorder.close_log()
                 return {"ok": False, "errors": ["監測已在進行中"]}, 409
             self.run_id += 1
             self.recorder = recorder
+            self.run_mode = mode
             self.spectrogram_job = None
             self.write_failures = set()
             self.params = {k: str(raw.get(k, DEFAULT_PARAMS[k])) for k in DEFAULT_PARAMS}
             self.params["com_port"] = com_port  # 畫面顯示實際使用的埠（自動偵測的結果）
             self.enabled = enabled
             self.duration = p["duration"]
-            self.sample_rate = p["sample_rate"]
-            self.history_duration = p["history_duration"]
-            self.spec_pending = np.array([], dtype=np.int16)
-            self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
-            self.spec_total = 0
-            self.spec_freqs = None
-            self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i": []}
-            self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i": 0}
+            self._reset_buffers(p)
             self._psu_csv_rec = None
-            self.opt_meta = None
-            self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
-            self.opt_total = 0
-            self.opt_latest = None
-            self.zero_warned = False
             self.last_result = None
             self.elapsed = 0.0
             self.start_time = start_ts
@@ -1588,17 +1658,10 @@ class MonitorService:
             parts = [name for key, name in (("temp", "溫度"), ("audio", "音訊"), ("distance", "距離"),
                                      ("spectrometer", "光譜"))
                      if enabled[key]]
-            self.status_text = f"監測中 ({'+'.join(parts)})"
+            self.status_text = (f"{'Sensor 測試模式（非正式實驗）' if mode == 'sensor_test' else '實驗錄製中'}"
+                                f" ({'+'.join(parts) or '無感測器'})")
             self.phase = "running"
-            for key, name in SENSOR_NAMES.items():
-                if not enabled[key]:
-                    r = pf["diag"][key]
-                    self.sensors[key].update(
-                        text="未啟用", level="off", reason=R_DISABLED,
-                        detail=self._disabled_detail(name, r["detail"]))
-            if enabled["audio"]:
-                self.sensors["audio"].update(text="初始化中", level="idle", reason=R_INIT,
-                                             detail="正在開啟音訊設備")
+            self._show_disabled(enabled, pf["diag"])
             stop_event = self.stop_event
             run_id = self.run_id
         if self.simulated:
@@ -1613,6 +1676,44 @@ class MonitorService:
 
         threads = {"timer": threading.Thread(target=self._timer_worker,
                                              args=(stop_event, p["duration"]), name="timer", daemon=True)}
+        threads.update(self._make_workers(stop_event, enabled, p, com_port, audio_sel, recorder))
+        with self.lock:
+            self.threads = threads
+        for t in threads.values():
+            t.start()
+        return {"ok": True, "state": self.snapshot()}, 200
+
+    def _reset_buffers(self, p):
+        """開始新一輪（錄製或試收）前清空顯示用緩衝。呼叫端持有 self.lock。"""
+        self.sample_rate = p["sample_rate"]
+        self.history_duration = p["history_duration"]
+        self.spec_pending = np.array([], dtype=np.int16)
+        self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
+        self.spec_total = 0
+        self.spec_freqs = None
+        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i": 0}
+        self.opt_meta = None
+        self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
+        self.opt_total = 0
+        self.opt_latest = None
+        self.zero_warned = False
+
+    def _show_disabled(self, enabled, diag):
+        """未啟用的感測器在狀態卡顯示「未啟用」與預檢原因；音訊顯示初始化中。呼叫端持有 self.lock。"""
+        for key, name in SENSOR_NAMES.items():
+            if not enabled[key]:
+                r = diag[key]
+                self.sensors[key].update(
+                    text="未啟用", level="off", reason=R_DISABLED,
+                    detail=self._disabled_detail(name, r["detail"]))
+        if enabled["audio"]:
+            self.sensors["audio"].update(text="初始化中", level="idle", reason=R_INIT,
+                                         detail="正在開啟音訊設備")
+
+    def _make_workers(self, stop_event, enabled, p, com_port, audio_sel, recorder):
+        """建立（不啟動）各感測器 worker thread；錄製與「檢驗 Sensor」試收共用。"""
+        threads = {}
         if enabled["temp"]:
             threads["temp"] = threading.Thread(target=self._temp_worker,
                                                args=(stop_event, com_port, recorder),
@@ -1633,11 +1734,7 @@ class MonitorService:
                 target=self._spectrometer_worker,
                 args=(stop_event, p["spec_interval"], p["spec_integration_ms"], p["history_duration"], recorder),
                 name="spectrometer", daemon=True)
-        with self.lock:
-            self.threads = threads
-        for t in threads.values():
-            t.start()
-        return {"ok": True, "state": self.snapshot()}, 200
+        return threads
 
     def _write_simulated_txt(self, recorder, info):
         with open(recorder.path("SIMULATED.txt"), "w", encoding="utf-8-sig") as f:
@@ -1780,7 +1877,10 @@ class MonitorService:
             sim.append("psu")
             info["simulated"] = sim
             self._write_simulated_txt(rec, info)
-        rec.update(devices=dict(info.get("devices") or {}, power_supply=self._psu_device_label()))
+        fields = {"devices": dict(info.get("devices") or {}, power_supply=self._psu_device_label())}
+        if info.get("mode") == "sensor_test":
+            fields["psu_logging"] = "passive"  # 測試模式中途才連上的電源：一樣只被動記錄
+        rec.update(**fields)
 
     def _psu_close_csv(self, recorder):
         with self._psu_csv_lock:  # 等進行中的懶開／寫入做完，之後 phase 已不是 running，不會再開
@@ -1827,6 +1927,606 @@ class MonitorService:
             self.notify("error", "寫檔失敗",
                         f"{key} 資料寫入失敗（磁碟可能已滿或被拔除）。\n監測仍在進行，請盡快釋放空間或停止監測。")
 
+    # ---------------- 正式實驗流程 ----------------
+    # 設計見 docs/plans/experiment-ux-flow.md（以「已決定（2026-10-31）」與「已釐清（2026-11-02）」為準）。
+    # 安全原則：電源相關異常一律讓輸出關閉、錄製繼續；感測器異常不停電源。開始順序在伺服器端執行，瀏覽器關掉也照跑。
+    def _mark_valid(self, key):
+        """worker 收到一筆有效數據時呼叫；只在「檢驗 Sensor」試收期間計數。"""
+        with self.lock:
+            if self._valid_hits is not None:
+                self._valid_hits[key] = self._valid_hits.get(key, 0) + 1
+
+    def exp_active(self):
+        """正式實驗是否進行中（從開始錄製到存檔完成）；這段期間電源參數與輸出鎖定。"""
+        with self.lock:
+            return self.exp is not None and self.exp["stage"] != "done"
+
+    def _exp_public(self):
+        """snapshot 用的實驗流程狀態（不含 recorder 物件）。呼叫端可持有 self.lock。"""
+        e = self.exp
+        if e is None:
+            return None
+        out = {k: v for k, v in e.items() if k != "recorder"}
+        out["active"] = e["stage"] != "done"
+        out["result_label"] = EXP_RESULTS.get(e["result"]) if e["result"] else None
+        on_at, off_at = e["output_on_at"], e["output_off_at"]
+        out["on_elapsed"] = round(((off_at or time.time()) - on_at), 2) if on_at else None
+        out["remaining"] = (round(max(0.0, e["duration_s"] - (time.time() - on_at)), 2)
+                            if on_at and not off_at else None)
+        return out
+
+    def _exp_parse(self, raw):
+        """驗證標籤、感測器參數、電源參數與實驗時間。回傳 (errors, recipe, duration_s)。"""
+        errors = []
+        try:
+            self.validate_params(raw)  # 標籤（必填）與感測器參數
+        except ValueError as e:
+            errors.append(str(e))
+        recipe = None
+        r = raw.get("recipe")
+        try:
+            plan_recipe({}, r)  # 模式、頻率、佔空比、U/I/P 範圍（同電源面板的「套用設定」）
+            recipe = {"mode": r["mode"], "freq_hz": float(r["freq_hz"]), "duty_pct": float(r["duty_pct"]),
+                      "u": float(r["u"]), "i": float(r["i"]), "p": float(r.get("p", RECIPE_LIMITS["p_default"]))}
+            if recipe["u"] <= 0 or recipe["i"] <= 0:
+                raise ValueError("電壓上限與電流上限都必須大於 0，否則電源不會輸出")
+        except (ValueError, TypeError, KeyError) as e:
+            errors.append(f"電源參數錯誤：{e}")
+            recipe = None
+        duration = None
+        try:
+            duration = parse_exp_time(raw.get("exp_time"))
+        except ValueError as e:
+            errors.append(str(e))
+        return errors, recipe, duration
+
+    def _exp_apply_recipe(self, recipe):
+        """把電源參數寫入電源並讀回比對（只能在輸出關閉時）。不一致丟 RuntimeError；成功回傳讀回值。"""
+        psu = self.psu
+        if not psu.connected:
+            raise RuntimeError("電源未連線")
+        if psu.phase != "idle":
+            raise RuntimeError(f"電源目前「{psu.snapshot()['phase_text']}」，參數只能在輸出關閉時寫入")
+        current = psu.read_params()
+        for ch, value in plan_recipe(current, recipe):
+            psu.write_param(ch, value)  # write_param 自己會讀回比對，不一致丟 RuntimeError
+        with psu.lock:
+            if psu.phase != "idle":
+                raise RuntimeError("電源輸出已開啟，取消寫入")
+            psu.set_setpoints(recipe["u"], recipe["i"], recipe["p"])
+        readback = psu.read_params()
+        names = {p.channel: p.name for p in PARAMS}
+        mismatch = [f"{names.get(ch, 'ch' + str(ch))}（ch{ch}）讀回 {readback.get(ch)}，應為 {value:g}"
+                    for ch, value in plan_recipe(readback, recipe)]
+        sp = psu.snapshot()["setpoints"]
+        for k, label in (("u", "電壓上限"), ("i", "電流上限"), ("p", "功率上限")):
+            if abs(sp[k] - recipe[k]) > 1e-6:
+                mismatch.append(f"{label}讀回 {sp[k]:g}，應為 {recipe[k]:g}")
+        if mismatch:
+            raise RuntimeError("電源參數寫入後讀回不一致：" + "；".join(mismatch))
+        return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"], "duty_pct": recipe["duty_pct"],
+                "setpoints": dict(sp), "read_at": iso_now(),
+                "channels": {str(ch): readback.get(ch) for ch in (33, 140, 1100, 51130, 51131)}}
+
+    def _psu_ready_errors(self):
+        """電源能不能開始：已連線、輸出關閉、RS232 控制、Ready、無警報、Interlock 正常、通訊正常。"""
+        snap = self.psu.snapshot()
+        st = snap["status"]
+        if not snap["connected"]:
+            return [f"電源未連線{('：' + snap['error']) if snap['error'] else ''}"]
+        errs = []
+        if snap["phase"] != "idle":
+            errs.append(f"電源目前「{snap['phase_text']}」，開始前輸出必須是關閉的")
+        if st is None:
+            errs.append("尚未收到電源狀態")
+            return errs
+        if not st["rs_control"]:
+            errs.append("電源不是 RS232 控制：網頁無法控制，請確認電源面板的控制來源")
+        if not st["ready"]:
+            errs.append("電源未就緒（Ready = 0）")
+        if st["alarm_active"]:
+            a = snap["alarm"]
+            errs.append("電源有警報" + (f" {a['code']}：{a['text']}（原文：{a['raw'] or '無'}）" if a else "")
+                        + "，請先排除原因")
+        if st["interlock"]:
+            errs.append("Interlock 觸發中（上蓋開關或安全迴路），請檢查安全迴路")
+        if snap["fail_count"]:
+            errs.append(f"電源通訊不穩：最近 {snap['fail_count']} 次沒有回應（{snap['error'] or '逾時'}）")
+        return errs
+
+    def exp_check(self, raw):
+        """「檢驗 Sensor」：連線並寫入／讀回電源參數、檢查電源狀態，四個感測器試收 sensor_check_s 秒。
+        電源不正常 → 不能開始；感測器異常 → 列出問題，可選「仍要開始」。"""
+        with self.exp_lock:
+            with self.lock:
+                if self.phase in ("running", "stopping", "checking"):
+                    return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗 Sensor"]}, 409
+                prev = (self.phase, self.status_text)
+                self.phase, self.status_text = "checking", "檢驗 Sensor 中…"
+                self._check_result = None  # 重新檢驗（不論成敗）都讓上一次的結果作廢
+            self.push_state()
+            try:
+                errors, recipe, duration = self._exp_parse(raw)
+                if errors:
+                    return {"ok": False, "errors": errors}, 400
+                psu_errors = []
+                readback = None
+                if not self.psu.connected:
+                    try:
+                        self.psu_connect(str(raw.get("psu_port") or ""))
+                    except RuntimeError as e:
+                        psu_errors.append(f"電源連線失敗：{e}（檢查電源主開關、RS232 線、COM 埠是否被 PVDPower 佔用）")
+                if self.psu.connected:
+                    try:
+                        readback = self._exp_apply_recipe(recipe)
+                    except (ValueError, RuntimeError, OSError) as e:
+                        psu_errors.append(str(e) or "電源沒有回應（逾時）")
+                sensors, sys_errors = self._sensor_trial(raw)
+                if self.psu.connected or not psu_errors:
+                    psu_errors += [e for e in self._psu_ready_errors() if e not in psu_errors]
+            finally:
+                with self.lock:
+                    if self.phase == "checking":
+                        self.phase, self.status_text = prev
+                self.push_state()
+        missing = [dict(key=k, **v) for k, v in sensors.items() if not v["ok"]]
+        result = {"ok": True, "psu_ok": not psu_errors, "psu_errors": psu_errors, "sensors": sensors,
+                  "missing": missing, "system_errors": sys_errors, "recipe": recipe, "readback": readback,
+                  "duration_s": duration, "can_start": not psu_errors and not sys_errors,
+                  "check_s": self.sensor_check_s, "baseline_s": self.exp_baseline_s}
+        self._check_result = dict(result, time=time.time())
+        for k, v in sensors.items():
+            slog(INFO if v["ok"] else WARN, SENSOR_NAMES[k],
+                 f"檢驗 Sensor：{'正常' if v['ok'] else '異常'}（有效數據 {v['valid']} 筆）"
+                 + ("" if v["ok"] else f" [{v['reason']}] {v['detail']}"))
+        slog(INFO if result["can_start"] else ERROR, PSU_NAME,
+             "檢驗 Sensor：電源" + ("正常" if not psu_errors else "不正常，不能開始：" + "；".join(psu_errors))
+             + (f"；讀回 {json.dumps(readback, ensure_ascii=False)}" if readback else ""))
+        return result, 200
+
+    def _sensor_trial(self, raw):
+        """試收：照開始錄製的方式啟動各感測器 worker，但不寫任何檔案（_NullRecorder）。
+        回傳 ({key: {ok, reason, reason_label, detail, valid, name}}, 系統錯誤)。"""
+        pf = self.preflight(raw, require_sensor=False)
+        sys_errors = list(pf["errors"])
+        p, enabled, diag = pf["parsed"], pf["enabled"], pf["diag"]
+        hits = {k: 0 for k in SENSOR_NAMES}
+        if p is not None and any(enabled.values()):
+            stop_event = threading.Event()
+            with self.lock:
+                self.run_id += 1
+                self._reset_buffers(p)
+                self.enabled = enabled
+                self.params = {k: str(raw.get(k, DEFAULT_PARAMS[k])) for k in DEFAULT_PARAMS}
+                self.params["com_port"] = pf["com_port"]
+                self.elapsed = 0.0
+                self.start_time = time.time()
+                self._reset_sensor_display()
+                self._show_disabled(enabled, diag)
+                self._valid_hits = dict(hits)
+                run_id = self.run_id
+            if self.simulated:
+                self.sim_temp = sim_devices.SimTemperature(faults=self.sim_faults)
+            self.publish("reset", {"run_id": run_id, "audio_meta": self.audio_meta()})
+            self.push_state()
+            threads = self._make_workers(stop_event, enabled, p, pf["com_port"],
+                                         str(raw.get("audio_device") or ""), _NullRecorder())
+            for t in threads.values():
+                t.start()
+            t0 = time.time()
+            try:
+                while True:
+                    now = time.time()
+                    with self.lock:
+                        self.elapsed = now - t0
+                        pending = [k for k in enabled if enabled[k] and not self._valid_hits.get(k)
+                                   and self.sensors[k]["reason"] in (R_IDLE, R_INIT)]
+                    if now - t0 >= self.sensor_check_s and (
+                            not pending or now - t0 >= self.sensor_check_s + SENSOR_CHECK_INIT_GRACE_S):
+                        break
+                    self.flush_series()
+                    time.sleep(0.1)
+            finally:
+                with self.lock:
+                    hits = dict(self._valid_hits)
+                    sensors_now = json.loads(json.dumps(self.sensors))
+                stop_event.set()
+                for name, t in threads.items():
+                    t.join(timeout=5 if name in ("audio", "distance", "spectrometer") else 2)
+                with self.lock:
+                    self._valid_hits = None
+                self.flush_series()
+        else:
+            with self.lock:
+                sensors_now = json.loads(json.dumps(self.sensors))
+        out = {}
+        sec = f"{self.sensor_check_s:g}"
+        for k, name in SENSOR_NAMES.items():
+            s = sensors_now[k]
+            if not enabled[k]:
+                reason, detail = diag[k]["reason"], self._disabled_detail(name, diag[k]["detail"])
+                if reason == R_OK:
+                    reason = R_DISABLED
+            elif hits[k] and s["level"] != "error":
+                reason, detail = R_OK, ""
+            elif s["reason"] not in NON_FAILURE_REASONS:
+                reason, detail = s["reason"], s["detail"] or f"{sec} 秒內沒有收到有效數據"
+            elif k == "audio":
+                reason, detail = R_NO_DATA, (f"{sec} 秒內錄到的訊號全為 0：麥克風權限未開、設備靜音或未接；"
+                                             "檢查 Windows 隱私權設定與麥克風開關")
+            else:
+                reason, detail = R_NO_DATA, f"{sec} 秒內沒有收到有效數據：檢查接線、電源與驅動"
+            out[k] = {"name": name, "ok": reason == R_OK, "reason": reason, "reason_label": REASON_LABELS.get(reason, reason),
+                      "detail": detail, "valid": hits[k]}
+        return out, sys_errors
+
+    def exp_start(self, raw):
+        """開始正式實驗：再次寫入／讀回電源參數並檢查電源，開始錄製，之後由 _exp_sequence 在伺服器端依序執行
+        基線 → 主繼電器 → 等就緒 → 輸出 ON → 計時。電源不正常一律不開始（也不錄製）。
+        一接受開始請求就先登錄實驗（stage="preparing"），從這一刻起電源由實驗流程獨佔：手動面板的輸出與參數
+        修改在伺服器端一律拒絕；之後任何一步失敗就釋放。"""
+        with self.exp_lock:
+            with self.lock:
+                if self.phase in ("running", "stopping", "checking"):
+                    return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗 Sensor"]}, 409
+            if raw.get("confirm_output") is not True:
+                return {"ok": False, "errors": ["開始前必須確認輸出高壓（confirm_output）"]}, 400
+            errors, recipe, duration = self._exp_parse(raw)
+            if errors:
+                return {"ok": False, "errors": errors}, 400
+            chk = self._check_result
+            if chk is None:
+                return {"ok": False, "errors": ["請先按「檢驗 Sensor」"]}, 400
+            if time.time() - chk["time"] > CHECK_VALID_S:
+                self._check_result = None
+                return {"ok": False, "errors": [f"檢驗結果已超過 {CHECK_VALID_S // 60:g} 分鐘，請重新「檢驗 Sensor」"]}, 400
+            if not chk["can_start"]:
+                return {"ok": False, "errors": ["上次檢驗電源不正常，請排除後重新「檢驗 Sensor」"]
+                        + chk["psu_errors"] + chk["system_errors"], "psu_errors": chk["psu_errors"]}, 400
+            if chk["recipe"] != recipe or chk["duration_s"] != duration:
+                return {"ok": False, "errors": ["電源參數或實驗時間和檢驗時不同，請重新「檢驗 Sensor」"]}, 400
+            if chk["missing"] and raw.get("confirm_missing") is not True:
+                return {"ok": False, "needs_confirm": True, "missing": chk["missing"],
+                        "errors": [f"{m['name']}：{m['detail']}" for m in chk["missing"]]}, 409
+            # 先登錄、上鎖，再做讀回比對與開始錄製
+            exp = {"id": None, "recorder": None, "stage": "preparing",
+                   "message": "準備開始：寫入並讀回電源參數、開始錄製",
+                   "duration_s": duration, "baseline_s": self.exp_baseline_s, "recipe": recipe, "readback": None,
+                   "missing": list(chk["missing"]), "result": None, "result_detail": "", "fault": None,
+                   "record_start": None, "output_on_at": None, "output_off_at": None, "output_off_cmd_at": None,
+                   "end_req": False, "estop": False, "stopping": False}
+            with self.lock:
+                prev_exp, self.exp = self.exp, exp
+            self.push_state()
+            started = False
+            try:
+                body, code = self._exp_prepare(exp, raw, chk, recipe, duration)
+                started = code == 200
+                return body, code
+            finally:
+                if not started:
+                    with self.lock:
+                        if self.exp is exp:
+                            self.exp = prev_exp  # 釋放鎖定，畫面回到上一場
+                    self.push_state()
+
+    def _exp_prepare(self, exp, raw, chk, recipe, duration):
+        """exp_start 的後半（實驗已登錄、電源已鎖定）：讀回比對 → 開始錄製 → 啟動流程 thread。"""
+        psu_errors = []
+        readback = None
+        if not self.psu.connected:
+            psu_errors.append("電源未連線：請重新「檢驗 Sensor」")
+        else:
+            try:
+                readback = self._exp_apply_recipe(recipe)
+            except (ValueError, RuntimeError, OSError) as e:
+                psu_errors.append(str(e) or "電源沒有回應（逾時）")
+            psu_errors += [e for e in self._psu_ready_errors() if e not in psu_errors]
+        if psu_errors:
+            slog(ERROR, PSU_NAME, "開始實驗被拒絕（電源不正常）：" + "；".join(psu_errors))
+            return {"ok": False, "errors": psu_errors, "psu_errors": psu_errors}, 400
+        if exp["estop"]:
+            return {"ok": False, "errors": ["準備開始時按了緊急停止，已取消開始（沒有開始錄製）"]}, 409
+        extra = {
+            "power_supply_settings": {"requested": recipe, "readback_before_start": readback},
+            "experiment_time_s": duration,
+            "baseline_s": self.exp_baseline_s,
+            "sensor_check": chk["sensors"],
+            "result": None,
+            "missing_sensors": chk["missing"],
+            "output": {"on_time": None, "off_command_time": None, "off_time": None, "timer_s": None, "on_s": None,
+                       "record_to_on_s": None},
+        }
+        body, code = self.start(raw, True, mode="experiment", extra_info=extra)
+        if code != 200:
+            return body, code
+        with self.lock:
+            recorder = self.recorder
+            enabled = dict(self.enabled)
+            start_ts = self.start_time
+        # 試收時正常、開始時的預檢卻停用的感測器也算缺少
+        missing = list(chk["missing"])
+        for k, name in SENSOR_NAMES.items():
+            if not enabled[k] and all(m["key"] != k for m in missing):
+                missing.append({"key": k, "name": name, "ok": False, "reason": R_DISABLED,
+                                "reason_label": REASON_LABELS[R_DISABLED], "detail": "開始錄製時預檢停用", "valid": 0})
+        with self.lock:
+            exp.update(id=recorder.experiment_id, recorder=recorder, readback=readback, missing=missing,
+                       record_start=start_ts)
+            if not exp["estop"]:  # 準備中按了緊急停止：錄製已開始就照緊急停止語意（不開輸出、錄製繼續）
+                exp["stage"] = "baseline"
+                exp["message"] = f"錄製基線中（電源關閉，{self.exp_baseline_s:g} 秒後開啟輸出）"
+            self._check_result = None  # 每一場都要重新檢驗
+        if missing != chk["missing"]:
+            recorder.update(missing_sensors=missing)
+        self._exp_update(exp)
+        slog(INFO, SRC_SYSTEM, f"正式實驗 {exp['id']} 開始：實驗時間 {duration:g} 秒，基線 {self.exp_baseline_s:g} 秒；"
+             f"電源參數 {json.dumps(recipe, ensure_ascii=False)}"
+             + (f"；缺少感測器 {'、'.join(m['name'] for m in missing)}（使用者確認仍要開始）" if missing else ""))
+        threading.Thread(target=self._exp_sequence, args=(exp,), name="exp_sequence", daemon=True).start()
+        return {"ok": True, "state": self.snapshot()}, 200
+
+    def _exp_recording(self, exp):
+        with self.lock:
+            return self.phase == "running" and self.recorder is exp["recorder"]
+
+    def _exp_update(self, exp, stage=None, message=None, **fields):
+        """更新流程狀態（畫面）並把需要的欄位寫進 manifest。
+        緊急停止之後階段只會停在 estop（存檔完成時由 _finalize 改成 done），其他流程不能再把它蓋掉。"""
+        with self.lock:
+            if exp["estop"] and stage not in (None, "estop"):
+                stage = message = None
+            if stage:
+                exp["stage"] = stage
+            if message is not None:
+                exp["message"] = message
+            exp.update(fields)
+            out = exp["output_on_at"], exp["output_off_at"]
+            cmd = exp["output_off_cmd_at"] or out[1]
+            # off_command_time：送出關閉（定時器到／結束／異常／緊急停止）的時間；off_time：電源回報輸出與主繼電器都已關閉
+            output = {"on_time": iso_now(out[0]) if out[0] else None,
+                      "off_command_time": iso_now(cmd) if out[0] and cmd else None,
+                      "off_time": iso_now(out[1]) if out[1] else None,
+                      "timer_s": round(cmd - out[0], 3) if out[0] and cmd else None,
+                      "on_s": round(out[1] - out[0], 3) if out[0] and out[1] else None,
+                      "record_to_on_s": round(out[0] - exp["record_start"], 3) if out[0] else None}
+            result = ({"code": exp["result"], "label": EXP_RESULTS[exp["result"]], "detail": exp["result_detail"],
+                       "time": exp.get("result_time")} if exp["result"] else None)
+            rec = exp["recorder"]
+        if rec is not None:  # 準備中（還沒開始錄製）沒有 manifest
+            try:
+                rec.update(output=output, result=result)
+            except OSError as e:
+                slog(ERROR, SRC_SYSTEM, f"實驗流程狀態寫入 JSON 失敗: {e}", e)
+        self.push_state()
+
+    def _exp_set_result(self, exp, code, detail):
+        """結果標記：第一個原因為準（例如緊急停止後電源回報關閉，仍記為中止-使用者）。回傳是否由這次設定。"""
+        with self.lock:
+            if exp["result"]:
+                return False
+            exp["result"], exp["result_detail"], exp["result_time"] = code, detail, iso_now()
+        slog(INFO if code == "completed" else WARN, SRC_SYSTEM, f"實驗結果：{EXP_RESULTS[code]}（{detail}）")
+        return True
+
+    def _psu_force_off(self):
+        """電源保險關閉：輸出相關階段一律送緊急關閉（輸出與主繼電器同一幀放掉）；已關閉時不動作。"""
+        if self.psu.phase in ("relays", "powering", "on", "stopping"):
+            self.psu.emergency_stop()
+
+    def _exp_mark_off_cmd(self, exp):
+        """輸出開著時記下送出關閉的時間，並在背景等電源回報關閉後記 off_time。呼叫端不可持有 self.lock。"""
+        with self.lock:
+            if exp["output_on_at"] is None or exp["output_off_at"] is not None or exp["output_off_cmd_at"] is not None:
+                return
+            exp["output_off_cmd_at"] = time.time()
+        threading.Thread(target=self._exp_watch_off, args=(exp,), name="exp_watch_off", daemon=True).start()
+
+    def _exp_watch_off(self, exp):
+        deadline = time.monotonic() + EXP_OFF_TIMEOUT_S
+        while self.psu.phase not in ("idle", "disconnected") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self.psu.phase not in ("idle", "disconnected"):
+            slog(WARN, PSU_NAME, f"{EXP_OFF_TIMEOUT_S:g} 秒內電源沒有回報輸出關閉，再送一次緊急關閉")
+            self.psu.emergency_stop()
+            return  # off_time 留空＝沒有收到電源的關閉回報
+        with self.lock:
+            if exp["output_off_at"] is not None:
+                return
+        self._exp_update(exp, output_off_at=time.time())
+
+    def _psu_fault_cause(self):
+        """輸出非預期關閉時判斷原因 → (結果代碼, 說明)。警報代碼由下一輪輪詢讀到，最多等 1.5 秒。"""
+        if self.shutdown_done:
+            return "aborted_system", "伺服器關閉，已關閉電源輸出"
+        snap = self.psu.snapshot()
+        if not snap["connected"] or snap["fail_count"]:
+            return "aborted_comm_lost", (f"與電源通訊中斷（{snap['error'] or '沒有回應'}）；"
+                                         "電源會在 4–5 秒內自行關閉輸出（ActSourceFail）")
+        st = snap["status"] or {}
+        if st.get("alarm_active"):
+            end = time.monotonic() + 1.5
+            while snap["alarm"] is None and time.monotonic() < end:
+                time.sleep(0.1)
+                snap = self.psu.snapshot()
+            a = snap["alarm"]
+            return "aborted_psu_alarm", ("電源警報，輸出已關閉" + (f"：{a['code']} {a['text']}（原文：{a['raw'] or '無'}）"
+                                                          if a else "（警報代碼未讀到）"))
+        if st.get("interlock"):
+            return "aborted_interlock", "Interlock 觸發（上蓋開關或安全迴路被打開），電源已關閉輸出"
+        return "aborted_psu_off", f"電源回報輸出已關閉：{snap['error'] or '原因不明'}"
+
+    def _exp_sequence(self, exp):
+        try:
+            self._exp_run(exp)
+        except Exception as e:  # noqa: BLE001  流程程式例外：先關輸出，錄製繼續，讓使用者結束本場
+            slog(ERROR, SRC_SYSTEM, f"實驗流程例外: {e}", e)
+            self._psu_force_off()
+            self._exp_fault(exp, "aborted_system", f"實驗流程程式例外：{e}")
+
+    def _exp_run(self, exp):
+        psu = self.psu
+        # 1) 基線：感測器已在錄、電源關閉
+        t_on = exp["record_start"] + exp["baseline_s"]
+        while time.time() < t_on:
+            if exp["estop"]:
+                return
+            if exp["end_req"]:
+                self._exp_set_result(exp, "aborted_user", "開始輸出前使用者結束（未開啟輸出）")
+                self._exp_update(exp, "ending", "結束中（未開啟輸出）")
+                self.request_stop("manual")
+                return
+            if not self._exp_recording(exp):
+                self._exp_set_result(exp, "aborted_system", "錄製在開始輸出前被外部停止")
+                return
+            time.sleep(0.05)
+        # 2) 主繼電器 → 等就緒 → 輸出 ON（順序與逾時由 controller 執行）
+        if exp["estop"]:
+            return
+        self._exp_update(exp, "starting", "接通主繼電器、等待電源就緒")
+        slog(INFO, PSU_NAME, f"基線 {time.time() - exp['record_start']:.1f} 秒完成，送出開啟輸出")
+        # 「檢查緊急停止＋開啟」與 exp_estop 的「設旗標＋緊急關閉」用同一把鎖：緊急停止若在開啟前到，就不開；
+        # 在開啟後到，controller 已在 relays 階段，emergency_stop 一定會生效（idle 時它不會動作）
+        start_err = None
+        with self._estop_lock:
+            if exp["estop"]:
+                return
+            try:
+                psu.power_on()
+            except RuntimeError as e:
+                start_err = e
+        if start_err is not None:
+            return self._exp_fault(exp, "aborted_psu_start_failed", f"電源無法開啟輸出：{start_err}")
+        deadline = time.monotonic() + EXP_OUTPUT_ON_TIMEOUT_S
+        while True:
+            if exp["estop"]:
+                self._psu_force_off()  # 保險：exp_estop 已關過一次
+                return
+            if not self._exp_recording(exp):
+                self._psu_force_off()
+                self._exp_set_result(exp, "aborted_system", "錄製在電源啟動中被外部停止，已關閉輸出")
+                return
+            if exp["end_req"]:
+                return self._exp_finish(exp, "aborted_user", "電源啟動中使用者結束")
+            phase = psu.phase
+            if phase == "on":
+                break
+            if phase not in ("relays", "powering"):  # controller 已自行取消（繼電器／輸出逾時、警報、Interlock、通訊）
+                code, why = self._psu_fault_cause()
+                return self._exp_fault(exp, "aborted_psu_start_failed" if code in ("aborted_psu_off",) else code,
+                                       f"電源無法開啟輸出：{why}")
+            if time.monotonic() > deadline:
+                self._psu_force_off()
+                return self._exp_fault(exp, "aborted_psu_start_failed",
+                                       f"{EXP_OUTPUT_ON_TIMEOUT_S:g} 秒內電源沒有進入輸出狀態，已關閉輸出")
+            time.sleep(0.05)
+        # 3) 輸出中：計時
+        on_at = time.time()
+        self._exp_update(exp, "on", f"輸出中（實驗時間 {exp['duration_s']:g} 秒）", output_on_at=on_at)
+        slog(INFO, SRC_SYSTEM, f"電源輸出 ON，開始計時 {exp['duration_s']:g} 秒（錄製開始後 {on_at - exp['record_start']:.2f} 秒）")
+        while True:
+            if exp["estop"]:
+                self._psu_force_off()
+                return
+            if not self._exp_recording(exp):
+                self._psu_force_off()
+                self._exp_set_result(exp, "aborted_system", "錄製在輸出中被外部停止，已關閉輸出")
+                return
+            if psu.phase != "on":
+                code, why = self._psu_fault_cause()
+                return self._exp_fault(exp, code, why)
+            elapsed = time.time() - on_at
+            if elapsed >= exp["duration_s"]:
+                return self._exp_finish(exp, "completed", f"實驗時間 {exp['duration_s']:g} 秒到")
+            if exp["end_req"]:
+                return self._exp_finish(exp, "aborted_user", f"使用者按「結束實驗」提前結束"
+                                        f"（通電 {elapsed:.1f} 秒／設定 {exp['duration_s']:g} 秒）")
+            time.sleep(0.05)
+
+    def _exp_finish(self, exp, code, detail):
+        """正常結束：輸出 OFF → 主繼電器 OFF（controller 依序執行，等兩者都回報關閉）→ 立刻停止錄製 → 存檔。
+        結束原因在這時就定下；結束中按了緊急停止 → 照緊急停止語意：輸出立即關閉、錄製繼續，等使用者按「停止錄製」。"""
+        with self.lock:
+            on = exp["output_on_at"] is not None and exp["output_off_at"] is None
+        self._exp_set_result(exp, code, detail)
+        self._exp_update(exp, "ending", "關閉輸出中", **({"output_off_cmd_at": time.time()} if on else {}))
+        self.psu.power_off()
+        deadline = time.monotonic() + EXP_OFF_TIMEOUT_S
+        while self.psu.phase not in ("idle", "disconnected") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self.psu.phase not in ("idle", "disconnected"):
+            slog(WARN, PSU_NAME, f"{EXP_OFF_TIMEOUT_S:g} 秒內電源沒有回報輸出與主繼電器關閉，改送緊急關閉")
+            self.psu.emergency_stop()
+        with self._estop_lock:
+            estopped = exp["estop"]
+            if not estopped:
+                exp["stopping"] = True  # 之後的緊急停止只關電源，不再改階段（錄製已在停止）
+        if estopped:
+            if on and self.psu.phase in ("idle", "disconnected"):
+                with self.lock:
+                    pending = exp["output_off_at"] is None
+                if pending:
+                    self._exp_update(exp, output_off_at=time.time())
+            slog(INFO, SRC_SYSTEM, "結束中按了緊急停止：輸出已關閉，錄製繼續，等使用者按「停止錄製」")
+            return
+        self._exp_update(exp, "ending", "輸出已關閉，停止錄製並存檔", **({"output_off_at": time.time()} if on else {}))
+        slog(INFO, SRC_SYSTEM, "電源輸出與主繼電器已關閉，停止錄製")
+        self.request_stop("timeout" if code == "completed" else "manual")
+
+    def _exp_fault(self, exp, code, detail):
+        """電源相關異常：保險再關一次輸出，錄製繼續；使用者只能「結束這場」（不提供重設警報後續跑）。"""
+        with self.lock:
+            if exp["estop"] or exp["stage"] == "done":
+                return
+        self._psu_force_off()
+        self._exp_mark_off_cmd(exp)
+        self._exp_set_result(exp, code, detail)
+        label = EXP_RESULTS[code]
+        self._exp_update(exp, "psu_fault", f"{label}：{detail}。感測器繼續錄製，請按「結束這場」",
+                         fault={"code": code, "message": detail})
+        self.notify("error", "實驗中止", f"{label}：{detail}\n感測器繼續錄製，請按「結束這場」存檔", src=PSU_NAME)
+
+    def exp_estop(self):
+        """緊急停止：電源立即 OFF（不論實驗狀態）；正式實驗中則感測器繼續錄，由使用者按「停止錄製」結束。
+        設旗標與送出緊急關閉在 _estop_lock 內完成，和流程 thread 的「檢查旗標＋開啟輸出」互斥（見 _exp_run）。"""
+        with self._estop_lock:
+            with self.lock:
+                exp = self.exp if self.exp is not None and self.exp["stage"] != "done" else None
+                if exp is not None:
+                    exp["estop"] = True  # 先設旗標再關輸出，流程 thread 才不會把它誤判成電源異常或再開輸出
+                    stopping = exp["stopping"]
+            if self.psu.connected:
+                self.psu.emergency_stop()
+        if exp is None:
+            return False
+        self._exp_mark_off_cmd(exp)
+        if stopping:  # 結束流程已在停止錄製：只關電源，錄製照原本流程存檔
+            slog(WARN, SRC_SYSTEM, "緊急停止：電源已關閉（錄製已在停止中）")
+            return True
+        with self.lock:
+            if exp["result"] and "緊急停止" not in exp["result_detail"]:
+                exp["result_detail"] += "；結束中按下緊急停止"
+        self._exp_set_result(exp, "aborted_user", "緊急停止")
+        self._exp_update(exp, "estop", "已緊急停止：電源輸出已關閉，感測器繼續錄製；按「停止錄製」結束本場")
+        self.notify("warning", "緊急停止", "電源輸出已關閉；感測器繼續錄製，按「停止錄製」結束本場", src=PSU_NAME)
+        return True
+
+    def exp_end(self):
+        """「結束實驗」／「結束這場」／「停止錄製」。輸出中（或基線、啟動中）→ 交給流程 thread 依序關閉後停止錄製；
+        已中止（電源異常、緊急停止）→ 直接停止錄製。準備中（還沒開始錄製）不接受。回傳是否接受。"""
+        with self.lock:
+            exp = self.exp if self.exp is not None and self.exp["stage"] != "done" else None
+            if exp is None or exp["stage"] == "preparing":
+                return False
+            stage = exp["stage"]
+            if stage in ("baseline", "starting", "on"):
+                exp["end_req"] = True
+                return True
+        if stage == "ending":
+            return True
+        self._psu_force_off()  # 保險：中止後輸出應已關閉
+        return self.request_stop("manual")
+
     # ---------------- 停止與存檔 ----------------
     def request_stop(self, reason="manual"):
         """非阻塞：切換到 stopping，交給 finalizer thread 等待 worker 結束並存檔。"""
@@ -1872,6 +2572,12 @@ class MonitorService:
             self.status_text = "已停止"
             self.finalizing = False
             self.threads = {}
+            if self.exp is not None and self.exp["recorder"] is recorder:
+                self.exp["stage"] = "done"  # 正式實驗結束：解除電源鎖定
+                if self.exp["result"] == "completed":
+                    self.exp["message"] = "實驗完成，資料已存檔"
+                else:
+                    self.exp["message"] = f"{EXP_RESULTS.get(self.exp['result'], '已結束')}，資料已存檔"
             # 溫度/距離保留最後讀值（同 main_csv）；音訊「錄音中」在停止後會誤導，改為已停止
             if self.enabled["audio"]:
                 self.sensors["audio"]["text"] = "已停止"
@@ -1954,7 +2660,20 @@ class MonitorService:
         elif self.enabled.get("audio"):
             self.notify("warning", "警告", "沒有錄製到音訊數據", src="音訊")
 
-        recorder.update(status="completed")
+        with self.lock:
+            exp = self.exp if self.exp is not None and self.exp["recorder"] is recorder else None
+            mode = self.run_mode
+        if exp is not None:
+            # 正式實驗：結果標記還沒定（伺服器關閉等外部停止）時標為中止-系統；摘要列出結果與缺少的感測器
+            self._exp_set_result(exp, "aborted_system", f"錄製被外部停止（{STOP_REASONS.get(reason, reason)}）")
+            self._exp_update(exp)
+            messages.insert(0, f"結果：{EXP_RESULTS[exp['result']]}（{exp['result_detail']}）")
+            if exp["missing"]:
+                messages.insert(1, "缺少感測器：" + "、".join(f"{m['name']}（{m['detail']}）" for m in exp["missing"]))
+        elif mode == "sensor_test":
+            messages.insert(0, "Sensor 測試模式（非正式實驗）")
+        # 頂層 status 與結果標記一致：正式實驗中止的場次記 aborted（檔案仍已完整存檔，原因見 result）
+        recorder.update(status="aborted" if exp is not None and exp["result"] != "completed" else "completed")
         with self.lock:
             self.last_result = {
                 "experiment_id": exp_id,
@@ -2031,6 +2750,7 @@ class MonitorService:
                         if calibrate:
                             temp = TEMP_CAL_GAIN * float(raw) + TEMP_CAL_OFFSET
                         log(temp, "ok", raw)
+                        self._mark_valid("temp")
                         self.add_series_point("temp", round(float(temp), 2))
                         self.set_sensor("temp", text=f"{temp:.1f} °C", value=round(float(temp), 1), level="ok")
                     else:
@@ -2093,6 +2813,7 @@ class MonitorService:
                             zero_seconds += len(chunk) / sample_rate
                         else:
                             zero_seconds = 0.0
+                            self._mark_valid("audio")
                         if zero_seconds >= 3:
                             # 呼叫端已確認持續 3 秒，直接升級；之後每段都記一次失敗，讓「仍在失敗」摘要能計數
                             self.zero_warned = True
@@ -2211,6 +2932,7 @@ class MonitorService:
                         rel = d["Value"]
                         absolute = (BASIC_REF + rel) * 1000  # µm
                         log("VALID", rel)
+                        self._mark_valid("distance")
                         self.add_series_point("distance", round(float(absolute), 3))
                         self.set_sensor("distance", text=f"{absolute:.1f} µm",
                                         value=round(float(absolute), 1), level="ok")
@@ -2331,6 +3053,7 @@ class MonitorService:
                 try:
                     counts = device.measure(integration_ms)
                     log(counts, "ok")
+                    self._mark_valid("spectrometer")
                     self._ingest_spectrum(time.time() - self.start_time, counts)
                     peak = int(np.argmax(counts))
                     self.set_sensor("spectrometer", text=f"最強峰 {wl[peak]:.1f} nm", value=round(float(counts[peak]), 1),
@@ -2486,24 +3209,54 @@ def api_devices():
 def api_preflight():
     raw = request.get_json(silent=True) or {}
     # 監測中再跑預檢會重開測距儀 DLL，干擾正在量測的 worker
-    if service.phase in ("running", "stopping"):
+    if service.phase in ("running", "stopping", "checking"):
         return jsonify({"ok": False, "errors": ["監測已在進行中"], "warnings": []}), 409
-    result = service.preflight(raw)
+    # Sensor 測試模式（mode=sensor_test）標籤可不填
+    result = service.preflight(raw, require_labels=raw.get("mode") != "sensor_test")
     result.pop("parsed", None)
     return jsonify(result)
 
 
 @app.post("/api/start")
 def api_start():
+    """Sensor 測試模式：只錄感測器，完全不碰電源（不連線、不送命令）；manifest 標 mode = sensor_test。"""
     raw = request.get_json(silent=True) or {}
-    body, code = service.start(raw, bool(raw.get("confirm")))
+    body, code = service.start(raw, bool(raw.get("confirm")), mode="sensor_test")
     return jsonify(body), code
 
 
 @app.post("/api/stop")
 def api_stop():
-    accepted = service.request_stop("manual")
+    # 正式實驗中改走實驗流程（先關輸出與主繼電器再停止錄製）
+    accepted = service.exp_end() if service.exp_active() else service.request_stop("manual")
     return jsonify({"ok": accepted, "state": service.snapshot()}), (202 if accepted else 409)
+
+
+# ---------------------------------------------------------------------------
+# 正式實驗流程：只准本機（restrict_remote_clients 已擋遠端）
+# ---------------------------------------------------------------------------
+@app.post("/api/exp/check")
+def api_exp_check():
+    body, code = service.exp_check(request.get_json(silent=True) or {})
+    return jsonify(body), code
+
+
+@app.post("/api/exp/start")
+def api_exp_start():
+    body, code = service.exp_start(request.get_json(silent=True) or {})
+    return jsonify(body), code
+
+
+@app.post("/api/exp/end")
+def api_exp_end():
+    accepted = service.exp_end()
+    return jsonify({"ok": accepted, "state": service.snapshot()}), (202 if accepted else 409)
+
+
+@app.post("/api/exp/estop")
+def api_exp_estop():
+    service.exp_estop()
+    return jsonify({"ok": True, "state": service.snapshot(), "snapshot": service.psu.snapshot()})
 
 
 @app.get("/api/state")
@@ -2568,6 +3321,20 @@ def _psu_connected():
     return service.psu
 
 
+def _psu_check_unlocked():
+    """正式實驗從「接受開始」到存檔完成，以及「檢驗 Sensor」寫入讀回參數期間，電源由流程獨佔。"""
+    if service.exp_active():
+        raise RuntimeError(EXP_PSU_LOCKED)
+    if service.phase == "checking":
+        raise RuntimeError("正在「檢驗 Sensor」（寫入並讀回電源參數中），請稍候再操作電源")
+
+
+def _psu_unlocked():
+    """正式實驗進行中不能改 U/I/P、寫參數、開輸出、重設警報或斷線（只能關閉／緊急停止）。"""
+    _psu_check_unlocked()
+    return _psu_connected()
+
+
 @app.get("/api/psu/state")
 def api_psu_state():
     return jsonify({"ok": True, "snapshot": service.psu.snapshot(), "params": dict(service.psu.params),
@@ -2588,6 +3355,7 @@ def api_psu_connect():
 @app.post("/api/psu/disconnect")
 def api_psu_disconnect():
     def run():
+        _psu_check_unlocked()
         service.psu.disconnect()
         return {"snapshot": service.psu.snapshot()}
     return _psu_call(run)
@@ -2596,7 +3364,7 @@ def api_psu_disconnect():
 @app.post("/api/psu/setpoints")
 def api_psu_setpoints():
     raw = request.get_json(silent=True) or {}
-    return _psu_call(lambda: {"setpoints": dict(zip("uip", _psu_connected().set_setpoints(
+    return _psu_call(lambda: {"setpoints": dict(zip("uip", _psu_unlocked().set_setpoints(
         raw.get("u"), raw.get("i"), raw.get("p"))))})
 
 
@@ -2606,7 +3374,7 @@ def api_psu_recipe():
 
     def run():
         plan_recipe({}, raw)  # 先驗證所有欄位，不寫入任何通道
-        psu = _psu_connected()
+        psu = _psu_unlocked()
         if psu.snapshot()["phase"] != "idle":
             raise RuntimeError("參數會寫入電源的 EEPROM，請先關閉輸出再修改")
         current = psu.read_params()
@@ -2630,7 +3398,7 @@ def api_psu_output():
     def run():
         if not isinstance(raw.get("on"), bool):
             raise ValueError("on 必須是 true 或 false")
-        psu = _psu_connected()
+        psu = _psu_unlocked() if raw["on"] else _psu_connected()  # 實驗中只能關，不能開
         if raw["on"]:
             psu.power_on()
         else:
@@ -2642,15 +3410,14 @@ def api_psu_output():
 @app.post("/api/psu/estop")
 def api_psu_estop():
     def run():
-        psu = _psu_connected()
-        psu.emergency_stop()
-        return {"snapshot": psu.snapshot()}
+        service.exp_estop()  # 電源已連線就立即關閉；正式實驗中同時標記中止（使用者），錄製繼續
+        return {"snapshot": service.psu.snapshot()}
     return _psu_call(run, local_only=False)
 
 
 @app.post("/api/psu/reset-alarms")
 def api_psu_reset_alarms():
-    return _psu_call(lambda: _psu_connected().reset_alarms())
+    return _psu_call(lambda: _psu_unlocked().reset_alarms())  # 實驗中不提供「重設警報後續跑」
 
 
 @app.post("/api/psu/reset-counters")
@@ -2672,7 +3439,7 @@ def api_psu_param():
             channel = int(raw.get("channel"))
         except (TypeError, ValueError):
             raise ValueError("channel 必須是整數") from None
-        return {"result": _psu_connected().write_param(channel, raw.get("value")),
+        return {"result": _psu_unlocked().write_param(channel, raw.get("value")),
                 "params": dict(service.psu.params)}
     return _psu_call(run)
 

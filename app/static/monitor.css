@@ -345,15 +345,6 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .dlg-actions .btn { height: 36px; }
 
-/* 實驗標籤視窗：字級與欄位比側欄大，方便填寫 */
-.dlg-labels { width: min(520px, calc(100vw - 32px)); }
-.dlg-labels .dlg-body { padding: 22px 24px 20px; gap: 14px; }
-.dlg-labels h2 { font-size: 18px; }
-.dlg-labels .field-label { font-size: 14px; color: var(--text); }
-.dlg-labels .field-hint { font-size: 12.5px; }
-.dlg-labels input, .dlg-labels select { height: 40px; font-size: 15px; }
-.dlg-labels .input-unit span { font-size: 13px; }
-.dlg-labels .dlg-actions .btn { height: 40px; min-width: 96px; }
 .specimen { border: 0; margin: 0; padding: 0; }
 .specimen legend { padding: 0; margin-bottom: 6px; }
 .seg { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; width: fit-content; margin-bottom: 8px;
@@ -456,3 +447,42 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 
 .psu-setting-grid small[data-level="error"] { color: var(--err); }
 .psu-setting-grid small[data-level="warn"] { color: var(--warn); }
+
+/* ---------- 正式實驗流程 ---------- */
+.topbar-meta { align-items: center; }
+.chip-btn { cursor: pointer; font: inherit; }
+.chip-btn[aria-pressed="true"] { background: var(--warn); border-color: var(--warn); color: #1a1400; font-weight: 700; }
+.chip-btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-estop-top { height: 36px; padding: 0 18px; font-size: 14px; }
+.btn-estop-top[hidden] { display: none; }
+.step { border: 0; margin: 0; min-width: 0; }
+.step h2 { display: flex; align-items: center; gap: 8px; }
+.step-no {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent); color: var(--accent-text); font-size: 11px; letter-spacing: 0;
+}
+.step[data-done="1"] .step-no { background: var(--ok); }
+.step:disabled .step-no { background: var(--off); }
+.step:disabled { opacity: .7; }
+.step [hidden] { display: none; }
+.controls .span-2 { grid-column: span 2; }
+.controls-test { padding-top: 10px; }
+.check-result { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
+.check-result[hidden] { display: none; }
+.check-result .ck-title { font-weight: 700; }
+.check-result .ck-row { display: flex; gap: 6px; align-items: baseline; }
+.check-result .ck-row .dot { flex: none; transform: translateY(1px); }
+.check-result .ck-row b { flex: none; }
+.check-result .ck-detail { color: var(--text-2); }
+.exp-bar { border-radius: var(--radius); padding: 12px 16px; background: var(--surface); border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px; }
+.exp-bar[hidden] { display: none; }
+.exp-bar-main { font-size: clamp(16px, 2.2vw, 22px); font-weight: 700; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.exp-bar-sub { font-size: 13px; color: var(--text-2); }
+.exp-bar[data-tone="on"] { border-color: var(--err); box-shadow: 0 0 0 1px color-mix(in srgb, var(--err) 50%, transparent); }
+.exp-bar[data-tone="fault"] { background: var(--err); border-color: var(--err); }
+.exp-bar[data-tone="fault"] .exp-bar-main, .exp-bar[data-tone="fault"] .exp-bar-sub { color: #fff; }
+.exp-bar[data-tone="test"] { background: var(--warn); border-color: var(--warn); }
+.exp-bar[data-tone="test"] .exp-bar-main, .exp-bar[data-tone="test"] .exp-bar-sub { color: #1a1400; }
+.psu[hidden] { display: none; }

@@ -37,7 +37,7 @@
   const KIND_NAME = { psu: "電源", distance: "距離", temperature: "溫度", spectrometer: "光譜儀", audio: "音訊" };
   const STATUS = {
     completed: ["ok", "完成"], recording: ["busy", "錄製中"], interrupted: ["warn", "中斷（未正常結束）"],
-    raw_saved: ["warn", "原始資料已存（頻譜未產生）"], unknown: ["off", "舊格式"],
+    raw_saved: ["warn", "原始資料已存（頻譜未產生）"], aborted: ["warn", "中止（原因見結果）"], unknown: ["off", "舊格式"],
   };
   // 這個警告每次連線都有（韌體測試版），不在圖上標記
   const BENIGN_ALARMS = new Set(["61711"]);

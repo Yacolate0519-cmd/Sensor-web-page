@@ -17,13 +17,76 @@
     <div class="topbar-meta">
       <span class="chip chip-sim" id="sim-chip" hidden title="這些感測器的數值是模擬產生的，不是真實量測">模擬模式</span>
       <a class="chip" href="/history" style="text-decoration:none" title="瀏覽過去的實驗並把數據畫成圖">實驗紀錄</a>
+      <button type="button" class="chip chip-btn" id="btn-manual" title="直接操作電源面板（不會錄製資料）">手動模式</button>
       <span class="chip" id="conn-chip" title="與伺服器的即時連線"><span class="dot" data-level="idle"></span><span id="conn-text">連線中</span></span>
+      <!-- 緊急停止：電源連線後固定在右上角；正式實驗中按下後感測器繼續錄，由使用者按「停止錄製」結束 -->
+      <button type="button" class="btn-estop btn-estop-top" id="btn-estop" hidden>緊急停止</button>
     </div>
   </header>
 
   <div class="layout">
     <!-- 左側：設定與控制 -->
     <aside class="sidebar" aria-label="設定">
+      <!-- 正式實驗流程（docs/plans/experiment-ux-flow.md）：① 標籤 → ② 電源參數 → 檢驗 Sensor → 開始實驗。上一步沒完成，下一步不能按 -->
+      <div id="flow" autocomplete="off">
+        <section class="group step" id="step-labels">
+          <h2><span class="step-no">1</span>實驗標籤</h2>
+          <label class="field">
+            <span class="field-label">金屬種類 <b class="req">*</b></span>
+            <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
+          </label>
+          <fieldset class="field specimen">
+            <legend class="field-label">試片 <b class="req">*</b></legend>
+            <div class="seg" role="radiogroup" aria-label="試片形狀">
+              <label><input type="radio" name="label_specimen_shape" value="square" checked><span>正方形</span></label>
+              <label><input type="radio" name="label_specimen_shape" value="circle"><span>圓形</span></label>
+            </div>
+            <div class="dims" data-shape="square">
+              <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（mm）"></div>
+              <span class="dims-x">×</span>
+              <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（mm）"></div>
+              <span class="dims-x">×</span>
+              <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（mm）"><span>mm</span></div>
+            </div>
+            <div class="dims" data-shape="circle" hidden>
+              <div class="input-unit"><input id="label_specimen_area" inputmode="decimal" placeholder="面積" aria-label="面積（mm²）"><span>mm²</span></div>
+              <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（mm）"><span>mm</span></div>
+            </div>
+            <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 mm</span>
+          </fieldset>
+          <label class="field">
+            <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
+            <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
+          </label>
+          <label class="field">
+            <span class="field-label">添加物（選填）</span>
+            <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
+          </label>
+        </section>
+
+        <fieldset class="group step" id="step-psu">
+          <h2><span class="step-no">2</span>電源參數</h2>
+          <p class="field-hint" id="step-psu-hint">先填完實驗標籤</p>
+          <div class="field"><span class="field-label">模式</span>
+            <div class="seg"><label><input type="radio" name="exp-kind" value="mono"><span>單極</span></label><label><input type="radio" name="exp-kind" value="bi" checked><span>雙極</span></label></div>
+          </div>
+          <div class="field" id="exp-pole-box" hidden><span class="field-label">輸出</span>
+            <div class="seg"><label><input type="radio" name="exp-pole" value="a" checked><span>A</span></label><label><input type="radio" name="exp-pole" value="b"><span>B</span></label></div>
+          </div>
+          <div class="grid-2">
+            <label class="field"><span class="field-label">頻率</span><div class="input-unit"><input id="exp-freq" inputmode="decimal" value="1000"><span>Hz</span></div></label>
+            <label class="field"><span class="field-label" id="exp-duty-label">正向 A 佔空比</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"><span>%</span></div></label>
+            <label class="field"><span class="field-label">電壓上限 U <b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"><span>V</span></div></label>
+            <label class="field"><span class="field-label">電流上限 I <b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"><span>A</span></div></label>
+            <label class="field"><span class="field-label">功率上限 P</span><div class="input-unit"><input id="exp-p" inputmode="decimal" value="10"><span>kW</span></div></label>
+            <label class="field"><span class="field-label">實驗時間 <b class="req">*</b></span><input id="exp-time" placeholder="分:秒 或 秒，例 10:00" spellcheck="false"></label>
+            <label class="field span-2"><span class="field-label">電源 COM 埠</span><input id="exp-port" value="COM8" placeholder="COM8" spellcheck="false"></label>
+          </div>
+          <p class="labels-error" id="exp-error" role="alert" hidden></p>
+          <span class="field-hint">按「檢驗 Sensor」就會把以上參數<b>寫入電源</b>（EEPROM）並讀回比對；開始前再確認一次。檢驗結果 5 分鐘內有效；實驗中鎖定，不能修改</span>
+        </fieldset>
+      </div>
+
       <form id="settings" autocomplete="off" novalidate>
 
         <section class="group">
@@ -121,13 +184,23 @@
       </form>
 
       <div class="controls">
-        <button type="button" class="btn btn-start" id="btn-start">輸入實驗標籤</button>
-        <button type="button" class="btn btn-stop" id="btn-stop" disabled>停止監測</button>
+        <button type="button" class="btn btn-ghost" id="btn-check" disabled title="試收四個感測器 3 秒，並把電源參數寫入電源、讀回比對">檢驗 Sensor</button>
+        <button type="button" class="btn btn-start" id="btn-exp-start" disabled>開始實驗</button>
+        <button type="button" class="btn btn-stop span-2" id="btn-stop" disabled>結束實驗</button>
+      </div>
+      <div class="check-result" id="check-result" hidden></div>
+      <div class="controls controls-test">
+        <button type="button" class="btn btn-sm btn-ghost span-2" id="btn-sensor-test" title="只錄感測器、完全不碰電源，用來排查 sensor 系統錯誤">Sensor 測試模式（不控制電源）</button>
       </div>
     </aside>
 
     <!-- 右側：數值與圖表 -->
     <main class="content">
+      <!-- 實驗狀態列：正式實驗（階段、計時、電壓電流）或 Sensor 測試模式標示 -->
+      <section class="exp-bar" id="exp-bar" role="status" hidden>
+        <div class="exp-bar-main" id="exp-bar-main"></div>
+        <div class="exp-bar-sub" id="exp-bar-sub"></div>
+      </section>
       <section class="stats" aria-label="狀態顯示">
         <article class="stat" id="card-time">
           <header><span class="dot" data-level="idle"></span><h3>執行時間</h3></header>
@@ -166,7 +239,8 @@
       </section>
 
       <!-- 電源供應器（TRUMPF TruPlasma Bipolar 4010）：獨立於實驗的開始／停止，由使用者明確連線；控制只准本機 -->
-      <section class="psu" id="psu-panel" aria-label="電源 TruPlasma">
+      <section class="psu" id="psu-panel" aria-label="電源 TruPlasma" hidden>
+        <p class="psu-banner" data-level="warning">手動模式：這個模式不會錄製資料</p>
         <header class="psu-head">
           <h2>電源 TruPlasma <span class="sim-tag" data-sim="psu" hidden>模擬</span></h2>
           <span class="sr-badge" id="psu-phase" data-tone="neutral">未連線</span>
@@ -238,49 +312,6 @@
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
-
-  <!-- 實驗標籤：按「輸入實驗標籤」後填寫，按「開始監測」送出（寫入 experiment_<id>.json 的 experiment_labels） -->
-  <dialog id="dlg-labels" class="dlg-labels">
-    <form method="dialog" class="dlg-body" id="labels-form" autocomplete="off" novalidate>
-      <h2>實驗標籤</h2>
-      <label class="field">
-        <span class="field-label">金屬種類 <b class="req">*</b></span>
-        <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
-      </label>
-      <fieldset class="field specimen">
-        <legend class="field-label">試片 <b class="req">*</b></legend>
-        <div class="seg" role="radiogroup" aria-label="試片形狀">
-          <label><input type="radio" name="label_specimen_shape" value="square" checked><span>正方形</span></label>
-          <label><input type="radio" name="label_specimen_shape" value="circle"><span>圓形</span></label>
-        </div>
-        <div class="dims" data-shape="square">
-          <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（mm）"></div>
-          <span class="dims-x">×</span>
-          <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（mm）"></div>
-          <span class="dims-x">×</span>
-          <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（mm）"><span>mm</span></div>
-        </div>
-        <div class="dims" data-shape="circle" hidden>
-          <div class="input-unit"><input id="label_specimen_area" inputmode="decimal" placeholder="面積" aria-label="面積（mm²）"><span>mm²</span></div>
-          <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（mm）"><span>mm</span></div>
-        </div>
-        <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 mm</span>
-      </fieldset>
-      <label class="field">
-        <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
-        <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
-      </label>
-      <label class="field">
-        <span class="field-label">添加物（選填）</span>
-        <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
-      </label>
-      <p class="labels-error" id="labels-error" role="alert" hidden></p>
-      <div class="dlg-actions">
-        <button type="button" class="btn btn-ghost" id="labels-cancel">取消</button>
-        <button value="ok" class="btn btn-start" id="labels-ok">開始監測</button>
-      </div>
-    </form>
-  </dialog>
 
   <dialog id="dlg">
     <form method="dialog" class="dlg-body">
