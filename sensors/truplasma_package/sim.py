@@ -176,8 +176,9 @@ class SimTruPlasma:
         if ch in self.params:
             return self.params[ch]
         mode, duty = self.params[33], self.params[51131] / 100
-        a = duty if mode == 32 else (1 if mode == 4 else 0)
-        b = 1 - duty if mode == 32 else (1 if mode == 8 else 0)
+        off = self.params[650] / 100  # 假設 Off 為週期 %（同 params.bipulse_timing，未在真機驗證）
+        a = max(0.0, duty - off) if mode == 32 else (1 if mode == 4 else 0)
+        b = max(0.0, 1 - duty - off) if mode == 32 else (1 if mode == 8 else 0)
         freq = self.params[1100] if self.params[140] and mode in (4, 8, 16) else self.params[51130] * 1000
         live = {966: self.u * a, 967: self.i * a, 980: self.p * a,
                 976: self.u * b, 977: self.i * b, 981: self.p * b,

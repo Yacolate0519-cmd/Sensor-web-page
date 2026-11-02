@@ -130,6 +130,35 @@ def check_setpoints(u, i, p):
     return tuple(out)
 
 
+def bipulse_timing(pos_pct, neg_pct):
+    """雙極脈衝：正向導通 a %、負向導通 b % → (占空比 ch51131, 關斷時間 ch650)，皆為週期的 %。
+
+    【假設，未在真機驗證】手冊 p.26：TA = Duty·T − Off、TB = (1−Duty)·T − Off，一個週期是
+    正向→關斷→負向→關斷。這裡假設 ch650 的單位是「週期的 %」，於是
+        off  = (100 − a − b) / 2     （必須是 1–20 的整數，ch650 是 byte）
+        duty = a + off               （必須在 1–99）
+    實機 ch650 曾讀到 80（超出手冊範圍），單位可能不是這個假設；上機驗證後只需改這個函式。
+    """
+    try:
+        a, b = float(pos_pct), float(neg_pct)
+    except (TypeError, ValueError):
+        raise ValueError("正向／負向導通 % 必須是數字") from None
+    if not (a == a and b == b) or abs(a) == float("inf") or abs(b) == float("inf"):
+        raise ValueError("正向／負向導通 % 不是有效數字")
+    if a <= 0 or b <= 0:
+        raise ValueError("正向／負向導通 % 必須大於 0")
+    total = a + b
+    if total != int(total) or int(total) % 2:
+        raise ValueError(f"正向 + 負向導通 % 必須是偶數（目前 {total:g}），關斷時間才會是整數")
+    off = (100 - total) / 2
+    if not 1 <= off <= 20:
+        raise ValueError(f"正向 + 負向導通 % 需在 60–98 之間（目前 {total:g}，關斷時間 {off:g} % 超出 1–20）")
+    duty = a + off
+    if not 1 <= duty <= 99:
+        raise ValueError(f"換算後佔空比 {duty:g} % 超出 1–99")
+    return duty, int(off)
+
+
 def plan_recipe(current, payload):
     """驗證完整配方並回傳需要寫入的通道。"""
     if not isinstance(payload, dict):
@@ -147,7 +176,10 @@ def plan_recipe(current, payload):
             raise ValueError(f"{label}必須在 {low:g}–{high:g}")
         return v
     freq = number("freq_hz", "頻率", 1000 if mode == "bipulse" else 1, 50000 if mode == "bipulse" else 100000)
-    duty = number("duty_pct", "佔空比", 1, 99)
+    if mode == "bipulse":
+        duty, off = bipulse_timing(number("pos_pct", "正向導通 %", 1, 98), number("neg_pct", "負向導通 %", 1, 98))
+    else:
+        duty = number("duty_pct", "佔空比", 1, 99)
     for key, label in (("u", "電壓"), ("i", "電流"), ("p", "功率")):
         value = number(key, label, 0, RECIPE_LIMITS[key], RECIPE_LIMITS["p_default"] if key == "p" else None)
         if key == "p" and value == 0:
@@ -155,5 +187,7 @@ def plan_recipe(current, payload):
     low = mode != "bipulse" and freq <= 1000
     desired = [(33, modes[mode]), (140, int(low)),
                (1100, round(freq)) if low else (51130, round(freq / 1000, 1)), (51131, duty)]
+    if mode == "bipulse":
+        desired.append((650, off))
     return [(ch, value) for ch, value in desired
             if current.get(ch, current.get(str(ch))) is None or abs(current.get(ch, current.get(str(ch))) - value) > 1e-5]
