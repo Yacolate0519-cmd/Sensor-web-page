@@ -70,7 +70,7 @@ from temp_py_package import list_candidate_ports  # noqa: E402
 from temp_py_package.reader import check_port_present, find_temperature_port, read_tx600n_diag
 from truplasma_package import MEASUREMENTS, PARAMS, SimTruPlasma, TruPlasmaController, open_serial  # noqa: E402
 from truplasma_package.params import RECIPE_LIMITS, plan_recipe  # noqa: E402
-from truplasma_package.protocol import PULSE_MODES  # noqa: E402
+from truplasma_package.protocol import ALARM_TEXT, PULSE_MODES, TEST_VERSION_CODES  # noqa: E402
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
@@ -161,14 +161,18 @@ STOP_REASONS = {"manual": "手動停止", "sigint": "Ctrl+C", "sigterm": "SIGTER
                 "error": "錯誤", "timeout": "計時結束"}
 
 # 正式實驗流程（docs/plans/experiment-ux-flow.md「已決定（2026-10-31）」）：
-# 標籤 → 電源參數＋實驗時間 → 檢驗 Sensor（試收）→ 確認 → 伺服器端依序：開始錄製 → 基線 → 主繼電器 → 輸出 ON → 計時
+# 標籤 → 電源參數＋實驗時間 → 檢驗Sensor與電供（試收）→ 確認 → 伺服器端依序：開始錄製 → 基線 → 主繼電器 → 輸出 ON → 計時
 EXP_BASELINE_S = 5.0             # 開始錄製後、送出電源開啟前的基線秒數（電源關閉）
-SENSOR_CHECK_S = 3.0             # 「檢驗 Sensor」試收秒數
+SENSOR_CHECK_S = 3.0             # 「檢驗Sensor與電供」試收秒數
 SENSOR_CHECK_INIT_GRACE_S = 5.0  # 試收時間到時仍在初始化（例如測距儀 ABLE 約 2.7 秒）的感測器最多再等幾秒
 EXP_OUTPUT_ON_TIMEOUT_S = 25.0   # 送出開啟後多久沒進入「輸出中」就放棄（controller 自己另有繼電器 10 秒、輸出 5 秒逾時）
 EXP_OFF_TIMEOUT_S = 8.0          # 結束時等電源回報輸出與主繼電器都關閉的上限，逾時改送緊急關閉
 EXP_MAX_S = 24 * 3600            # 實驗時間上限
-CHECK_VALID_S = 300              # 「檢驗 Sensor」結果的有效期限；超過就要重新檢驗
+# 「檢驗」時自動重設一次的鎖存警報白名單：61613 ActSourceFail 是電腦停止送心跳 4–5 秒後電源自鎖（斷線、伺服器重啟、
+# 進出手動模式都會觸發，多半不是真問題）；Test version 韌體訊息不是故障。其他代碼（短路、過溫、冷卻水…）可能是真問題，不自動重設。
+AUTO_RESET_ALARM_CODES = frozenset({61613} | set(TEST_VERSION_CODES))
+AUTO_RESET_WAIT_S = 3.0         # 送出重設後，等警報清掉的最長秒數
+CHECK_VALID_S = 300              # 「檢驗Sensor與電供」結果的有效期限；超過就要重新檢驗
 RUN_MODES = {"experiment": "正式實驗", "sensor_test": "Sensor 測試模式（非正式實驗，不控制電源）"}
 # 正式實驗的結果標記（寫進 experiment_<id>.json 的 result.code）
 EXP_RESULTS = {
@@ -630,13 +634,13 @@ def iso_now(ts=None):
     return datetime.datetime.fromtimestamp(ts if ts is not None else time.time()).astimezone().isoformat()
 
 
-# 套用配方後讀回比對與顯示的通道：脈衝模式、低頻模式、低頻設定值／頻率設定值、佔空比，加上 Off Time（只顯示，不寫入）
+# 套用配方後讀回比對與顯示的通道：脈衝模式、低頻模式、低頻設定值／頻率設定值、佔空比，加上 Off Time（雙極時由 pos/neg 換算後一併寫入比對）
 RECIPE_READBACK_CHANNELS = (33, 140, 1100, 51130, 51131, 650)
 RECIPE_INCOMPLETE = "上次套用配方沒有完成讀回比對（部分參數可能已寫入）"
 
 
 def recipe_readback_errors(readback, recipe):
-    """配方寫入後的讀回比對：回傳不一致的通道（依模式只比對該寫的 ch33/140/1100 或 51130/51131），
+    """配方寫入後的讀回比對：回傳不一致的通道（依模式只比對該寫的 ch33/140/1100 或 51130/51131，雙極再加 ch650），
     每項列出通道、寫入值、讀回值。"""
     names = {p.channel: p.name for p in PARAMS}
     return [f"{names.get(ch, 'ch' + str(ch))}（ch{ch}）寫入 {value:g}，讀回 "
@@ -666,7 +670,7 @@ def parse_exp_time(value):
 
 
 class _NullRecorder:
-    """「檢驗 Sensor」試收用：介面同 ExperimentRecorder，但什麼都不寫（試收資料不存檔）。"""
+    """「檢驗Sensor與電供」試收用：介面同 ExperimentRecorder，但什麼都不寫（試收資料不存檔）。"""
     experiment_id = "SENSOR_CHECK"
 
     def __getattr__(self, name):
@@ -1004,7 +1008,7 @@ class MonitorService:
         # 正式實驗流程（exp_check / exp_start / exp_end / exp_estop）
         self.run_mode = None          # 目前／上一次錄製的模式：experiment | sensor_test
         self.exp = None               # 目前／上一次正式實驗的流程狀態（dict，見 exp_start）；stage == "done" 表示已結束
-        self._check_result = None     # 最近一次「檢驗 Sensor」的結果；開始實驗時使用，開始後清掉（每場都要重新檢驗）
+        self._check_result = None     # 最近一次「檢驗Sensor與電供」的結果；開始實驗時使用，開始後清掉（每場都要重新檢驗）
         self.psu_recipe_errors = []   # 最近一次套用配方的讀回不一致項目；非空時拒絕開啟輸出，直到重新套用且讀回一致
         self.exp_lock = threading.Lock()  # 檢驗與開始互斥（緊急停止不拿這個鎖，任何時候都能立即執行）
         self._estop_lock = threading.RLock()  # 緊急停止「設旗標＋關輸出」與流程「檢查旗標＋開輸出」互斥（只包住不阻塞的呼叫）
@@ -1563,7 +1567,7 @@ class MonitorService:
         電源由實驗流程控制）；extra_info 併進 experiment_<id>.json。"""
         with self.lock:
             if self.phase in ("running", "stopping", "checking"):
-                return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗 Sensor"]}, 409
+                return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗Sensor與電供"]}, 409
         pf = self.preflight(raw, require_labels=mode != "sensor_test", require_sensor=mode != "experiment")
         if not pf["ok"]:
             return {"ok": False, "errors": pf["errors"], "warnings": pf["warnings"]}, 400
@@ -1727,7 +1731,7 @@ class MonitorService:
                                          detail="正在開啟音訊設備")
 
     def _make_workers(self, stop_event, enabled, p, com_port, audio_sel, recorder):
-        """建立（不啟動）各感測器 worker thread；錄製與「檢驗 Sensor」試收共用。"""
+        """建立（不啟動）各感測器 worker thread；錄製與「檢驗Sensor與電供」試收共用。"""
         threads = {}
         if enabled["temp"]:
             threads["temp"] = threading.Thread(target=self._temp_worker,
@@ -1947,7 +1951,7 @@ class MonitorService:
     # 設計見 docs/plans/experiment-ux-flow.md（以「已決定（2026-10-31）」與「已釐清（2026-11-02）」為準）。
     # 安全原則：電源相關異常一律讓輸出關閉、錄製繼續；感測器異常不停電源。開始順序在伺服器端執行，瀏覽器關掉也照跑。
     def _mark_valid(self, key):
-        """worker 收到一筆有效數據時呼叫；只在「檢驗 Sensor」試收期間計數。"""
+        """worker 收到一筆有效數據時呼叫；只在「檢驗Sensor與電供」試收期間計數。"""
         with self.lock:
             if self._valid_hits is not None:
                 self._valid_hits[key] = self._valid_hits.get(key, 0) + 1
@@ -1982,7 +1986,9 @@ class MonitorService:
         r = raw.get("recipe")
         try:
             plan_recipe({}, r)  # 模式、頻率、佔空比、U/I/P 範圍（同電源面板的「套用設定」）
-            recipe = {"mode": r["mode"], "freq_hz": float(r["freq_hz"]), "duty_pct": float(r["duty_pct"]),
+            recipe = {"mode": r["mode"], "freq_hz": float(r["freq_hz"]),
+                      **({"pos_pct": float(r["pos_pct"]), "neg_pct": float(r["neg_pct"])} if r["mode"] == "bipulse"
+                         else {"duty_pct": float(r["duty_pct"])}),
                       "u": float(r["u"]), "i": float(r["i"]), "p": float(r.get("p", RECIPE_LIMITS["p_default"]))}
             if recipe["u"] <= 0 or recipe["i"] <= 0:
                 raise ValueError("電壓上限與電流上限都必須大於 0，否則電源不會輸出")
@@ -2022,13 +2028,47 @@ class MonitorService:
         if mismatch:
             raise RuntimeError("電源參數寫入後讀回不一致，不能開啟輸出：" + "；".join(mismatch))
         # actual：電源回報的實際頻率／佔空比（ch51140／51141，每輪心跳輪詢的量測值）
-        return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"], "duty_pct": recipe["duty_pct"],
+        return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"],
+                **({"pos_pct": recipe["pos_pct"], "neg_pct": recipe["neg_pct"]} if recipe["mode"] == "bipulse"
+                   else {"duty_pct": recipe["duty_pct"]}),
                 "setpoints": dict(sp), "read_at": iso_now(),
                 "channels": {str(ch): readback.get(ch) for ch in RECIPE_READBACK_CHANNELS},
                 "actual": {"freq_hz": meas.get("Freq_Hz"), "duty_pct": meas.get("Duty_pct")}}
 
-    def _psu_ready_errors(self):
-        """電源能不能開始：已連線、輸出關閉、RS232 控制、Ready、無警報、Interlock 正常、通訊正常。"""
+    def _psu_auto_reset_alarm(self):
+        """「檢驗」前的鎖存警報自動重設（只一次）。回傳 None＝沒動作；"cleared"／"failed"＝已重設且清掉／仍未清除。
+        只在警報啟用、輸出 idle、且代碼屬於 AUTO_RESET_ALARM_CODES 時才送重設；代碼讀不到就不動。"""
+        end = time.monotonic() + 1.5
+        snap = self.psu.snapshot()
+        while time.monotonic() < end and (snap["status"] is None or (snap["status"]["alarm_active"]
+                                                                     and snap["alarm"] is None)):
+            time.sleep(0.1)
+            snap = self.psu.snapshot()
+        st, alarm = snap["status"], snap["alarm"]
+        if st is None or not st["alarm_active"] or snap["phase"] != "idle" or alarm is None:
+            return None
+        code = alarm["code"]
+        if code not in AUTO_RESET_ALARM_CODES:
+            return None
+        try:
+            self.psu.reset_alarms()
+        except RuntimeError:
+            return None
+        end = time.monotonic() + AUTO_RESET_WAIT_S
+        while time.monotonic() < end:
+            time.sleep(0.1)
+            now = self.psu.snapshot()["status"]
+            if now is not None and not now["alarm_active"]:
+                break
+        cleared = not (self.psu.snapshot()["status"] or {}).get("alarm_active", True)
+        meaning = ALARM_TEXT.get(code) or ("Test version 韌體訊息" if code in TEST_VERSION_CODES else "")
+        slog(INFO if cleared else WARN, PSU_NAME,
+             f"檢驗時自動重設警報 {code}（{meaning}）：" + ("已清除" if cleared else "重設後仍未清除"))
+        return "cleared" if cleared else "failed"
+
+    def _psu_ready_errors(self, auto_reset=None):
+        """電源能不能開始：已連線、輸出關閉、RS232 控制、Ready、無警報、Interlock 正常、通訊正常。
+        auto_reset="failed"＝剛自動重設過警報仍未清除，警報訊息加註。"""
         snap = self.psu.snapshot()
         st = snap["status"]
         if not snap["connected"]:
@@ -2046,7 +2086,9 @@ class MonitorService:
         if st["alarm_active"]:
             a = snap["alarm"]
             errs.append("電源有警報" + (f" {a['code']}：{a['text']}（原文：{a['raw'] or '無'}）" if a else "")
-                        + "，請先排除原因")
+                        + "，請先排除原因"
+                        + ("（已自動重設一次仍未清除，請檢查 RS232 線／COM 埠，或到「電供設定手動模式」處理）"
+                           if auto_reset == "failed" else ""))
         if st["interlock"]:
             errs.append("Interlock 觸發中（上蓋開關或安全迴路），請檢查安全迴路")
         if snap["fail_count"]:
@@ -2054,14 +2096,14 @@ class MonitorService:
         return errs
 
     def exp_check(self, raw):
-        """「檢驗 Sensor」：連線並寫入／讀回電源參數、檢查電源狀態，四個感測器試收 sensor_check_s 秒。
+        """「檢驗Sensor與電供」：連線並寫入／讀回電源參數、檢查電源狀態，四個感測器試收 sensor_check_s 秒。
         電源不正常 → 不能開始；感測器異常 → 列出問題，可選「仍要開始」。"""
         with self.exp_lock:
             with self.lock:
                 if self.phase in ("running", "stopping", "checking"):
-                    return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗 Sensor"]}, 409
+                    return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗Sensor與電供"]}, 409
                 prev = (self.phase, self.status_text)
-                self.phase, self.status_text = "checking", "檢驗 Sensor 中…"
+                self.phase, self.status_text = "checking", "檢驗Sensor與電供 中…"
                 self._check_result = None  # 重新檢驗（不論成敗）都讓上一次的結果作廢
             self.push_state()
             try:
@@ -2075,6 +2117,7 @@ class MonitorService:
                         self.psu_connect(str(raw.get("psu_port") or ""))
                     except RuntimeError as e:
                         psu_errors.append(f"電源連線失敗：{e}（檢查電源主開關、RS232 線、COM 埠是否被 PVDPower 佔用）")
+                auto_reset = self._psu_auto_reset_alarm() if self.psu.connected else None
                 if self.psu.connected:
                     try:
                         readback = self._exp_apply_recipe(recipe)
@@ -2082,7 +2125,7 @@ class MonitorService:
                         psu_errors.append(str(e) or "電源沒有回應（逾時）")
                 sensors, sys_errors = self._sensor_trial(raw)
                 if self.psu.connected or not psu_errors:
-                    psu_errors += [e for e in self._psu_ready_errors() if e not in psu_errors]
+                    psu_errors += [e for e in self._psu_ready_errors(auto_reset) if e not in psu_errors]
             finally:
                 with self.lock:
                     if self.phase == "checking":
@@ -2096,10 +2139,10 @@ class MonitorService:
         self._check_result = dict(result, time=time.time())
         for k, v in sensors.items():
             slog(INFO if v["ok"] else WARN, SENSOR_NAMES[k],
-                 f"檢驗 Sensor：{'正常' if v['ok'] else '異常'}（有效數據 {v['valid']} 筆）"
+                 f"檢驗Sensor與電供：{'正常' if v['ok'] else '異常'}（有效數據 {v['valid']} 筆）"
                  + ("" if v["ok"] else f" [{v['reason']}] {v['detail']}"))
         slog(INFO if result["can_start"] else ERROR, PSU_NAME,
-             "檢驗 Sensor：電源" + ("正常" if not psu_errors else "不正常，不能開始：" + "；".join(psu_errors))
+             "檢驗Sensor與電供：電源" + ("正常" if not psu_errors else "不正常，不能開始：" + "；".join(psu_errors))
              + (f"；讀回 {json.dumps(readback, ensure_ascii=False)}" if readback else ""))
         return result, 200
 
@@ -2187,7 +2230,7 @@ class MonitorService:
         with self.exp_lock:
             with self.lock:
                 if self.phase in ("running", "stopping", "checking"):
-                    return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗 Sensor"]}, 409
+                    return {"ok": False, "errors": ["監測已在進行中" if self.phase != "checking" else "正在檢驗Sensor與電供"]}, 409
             if raw.get("confirm_output") is not True:
                 return {"ok": False, "errors": ["開始前必須確認輸出高壓（confirm_output）"]}, 400
             errors, recipe, duration = self._exp_parse(raw)
@@ -2195,15 +2238,15 @@ class MonitorService:
                 return {"ok": False, "errors": errors}, 400
             chk = self._check_result
             if chk is None:
-                return {"ok": False, "errors": ["請先按「檢驗 Sensor」"]}, 400
+                return {"ok": False, "errors": ["請先按「檢驗Sensor與電供」"]}, 400
             if time.time() - chk["time"] > CHECK_VALID_S:
                 self._check_result = None
-                return {"ok": False, "errors": [f"檢驗結果已超過 {CHECK_VALID_S // 60:g} 分鐘，請重新「檢驗 Sensor」"]}, 400
+                return {"ok": False, "errors": [f"檢驗結果已超過 {CHECK_VALID_S // 60:g} 分鐘，請重新「檢驗Sensor與電供」"]}, 400
             if not chk["can_start"]:
-                return {"ok": False, "errors": ["上次檢驗電源不正常，請排除後重新「檢驗 Sensor」"]
+                return {"ok": False, "errors": ["上次檢驗電源不正常，請排除後重新「檢驗Sensor與電供」"]
                         + chk["psu_errors"] + chk["system_errors"], "psu_errors": chk["psu_errors"]}, 400
             if chk["recipe"] != recipe or chk["duration_s"] != duration:
-                return {"ok": False, "errors": ["電源參數或實驗時間和檢驗時不同，請重新「檢驗 Sensor」"]}, 400
+                return {"ok": False, "errors": ["電源參數或實驗時間和檢驗時不同，請重新「檢驗Sensor與電供」"]}, 400
             if chk["missing"] and raw.get("confirm_missing") is not True:
                 return {"ok": False, "needs_confirm": True, "missing": chk["missing"],
                         "errors": [f"{m['name']}：{m['detail']}" for m in chk["missing"]]}, 409
@@ -2234,7 +2277,7 @@ class MonitorService:
         psu_errors = []
         readback = None
         if not self.psu.connected:
-            psu_errors.append("電源未連線：請重新「檢驗 Sensor」")
+            psu_errors.append("電源未連線：請重新「檢驗Sensor與電供」")
         else:
             try:
                 readback = self._exp_apply_recipe(recipe)
@@ -3341,11 +3384,11 @@ def _psu_connected():
 
 
 def _psu_check_unlocked():
-    """正式實驗從「接受開始」到存檔完成，以及「檢驗 Sensor」寫入讀回參數期間，電源由流程獨佔。"""
+    """正式實驗從「接受開始」到存檔完成，以及「檢驗Sensor與電供」寫入讀回參數期間，電源由流程獨佔。"""
     if service.exp_active():
         raise RuntimeError(EXP_PSU_LOCKED)
     if service.phase == "checking":
-        raise RuntimeError("正在「檢驗 Sensor」（寫入並讀回電源參數中），請稍候再操作電源")
+        raise RuntimeError("正在「檢驗Sensor與電供」（寫入並讀回電源參數中），請稍候再操作電源")
 
 
 def _psu_unlocked():
@@ -3401,6 +3444,8 @@ def api_psu_recipe():
         plan = plan_recipe(current, raw)
         written = [psu.write_param(ch, value) for ch, value in plan]
         all_channels = [33, 140, 1100 if raw["mode"] != "bipulse" and float(raw["freq_hz"]) <= 1000 else 51130, 51131]
+        if raw["mode"] == "bipulse":
+            all_channels.append(650)
         skipped = [{"channel": ch, "value": current[ch]} for ch in all_channels if ch not in {item[0] for item in plan}]
         # 設定上限前再次檢查，避免輸出已開啟時套用。
         with psu.lock:

@@ -17,7 +17,7 @@ from truplasma_package import controller as ctl
 
 LABELS = {"label_metal": "Al", "label_electrolyte": "test", "label_specimen_shape": "square",
           "label_specimen_length": "10", "label_specimen_width": "10", "label_specimen_thickness": "1"}
-RECIPE = {"mode": "bipulse", "freq_hz": 1000, "duty_pct": 50, "u": 100, "i": 2, "p": 1}
+RECIPE = {"mode": "bipulse", "freq_hz": 1000, "pos_pct": 45, "neg_pct": 45, "u": 100, "i": 2, "p": 1}
 
 
 def wait_for(pred, timeout=15.0):
@@ -156,7 +156,7 @@ def test_psu_interlock_cannot_start(svc, tmp_path):
 
 def test_start_requires_check_and_confirm(svc):
     res, code = svc.exp_start(body(confirm_output=True))
-    assert code == 400 and "檢驗 Sensor" in res["errors"][0]
+    assert code == 400 and "檢驗Sensor與電供" in res["errors"][0]
     check_ok(svc)
     res, code = svc.exp_start(body())
     assert code == 400 and "confirm_output" in res["errors"][0]
@@ -319,3 +319,48 @@ def test_sensor_test_mode_never_touches_psu(svc, client, tmp_path):
     assert svc.exp is None
     for name in names:
         delattr(svc.psu, name)
+
+
+# 檢驗時自動重設鎖存警報（白名單：61613 與 Test version 家族；其他照擋） ---------------------
+
+
+def _latch(svc, code):
+    """連線後讓模擬電源鎖存警報 code，等網頁端讀到代碼。"""
+    svc.psu_connect("SIM")
+    svc.psu_ports[-1]._trip(code)
+    assert wait_for(lambda: (svc.psu.snapshot()["alarm"] or {}).get("code") == code)
+
+
+def _count_resets(svc, monkeypatch):
+    sent = []
+    real = svc.psu.reset_alarms
+    monkeypatch.setattr(svc.psu, "reset_alarms", lambda: (sent.append(1), real())[1])
+    return sent
+
+
+@pytest.mark.parametrize("code", [61613, 61714])
+def test_check_auto_resets_whitelisted_alarm(svc, monkeypatch, code):
+    _latch(svc, code)
+    sent = _count_resets(svc, monkeypatch)
+    res = check_ok(svc)
+    assert sent == [1] and res["psu_ok"], res["psu_errors"]
+    assert not svc.psu.snapshot()["status"]["alarm_active"]
+
+
+def test_check_does_not_reset_other_alarm(svc, monkeypatch):
+    _latch(svc, 61624)  # 短路：可能是真問題，不自動重設
+    sent = _count_resets(svc, monkeypatch)
+    res = check_ok(svc)
+    assert sent == [] and not res["psu_ok"]
+    assert any("61624" in e for e in res["psu_errors"]) and not any("自動重設" in e for e in res["psu_errors"])
+
+
+def test_check_blocks_with_note_when_reset_does_not_clear(svc, monkeypatch):
+    monkeypatch.setattr(wm, "AUTO_RESET_WAIT_S", 1.0)
+    svc.psu_connect("SIM")
+    svc.psu_ports[-1].set_message(61613, "ActSourceFail", "alarm")  # 重設清不掉
+    assert wait_for(lambda: (svc.psu.snapshot()["alarm"] or {}).get("code") == 61613)
+    sent = _count_resets(svc, monkeypatch)
+    res = check_ok(svc)
+    assert sent == [1] and not res["psu_ok"]
+    assert any("已自動重設一次仍未清除" in e for e in res["psu_errors"])

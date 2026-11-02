@@ -282,7 +282,7 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 
 **使用方式**
 1. 在接電源的電腦（實驗室收資料電腦，電源接在 COM8）上開網頁，COM 欄位填 `COM8`（預設）按「連線」；沒有電源時用 `--simulate psu`（或 `all`）練習。
-2. 輸入模式、頻率、佔空比及 U／I 上限（P 上限在進階區），確認並套用設定，再按「開始輸出」。輸入框改了卻沒套用時不會開輸出。
+2. 輸入模式、頻率、佔空比（單極）或正向／負向導通 %（雙極，網頁即時顯示換算出的占空比、關斷時間與導通 µs；正向 + 負向須為 60–98 的偶數）及 U／I 上限（P 上限在進階區），確認並套用設定，再按「開始輸出」。輸入框改了卻沒套用時不會開輸出。
 3. 「關閉輸出」正常關機；「緊急關閉」立刻要求關閉輸出（連線中隨時可按）。
 4. 「電源參數」展開後按「讀取參數」，每列有「寫入」，會先確認「舊值 → 新值」。
 
@@ -292,8 +292,8 @@ uv run python main.py --simulate all --simulate-faults    # 全部模擬，並�
 - 開啟順序：Ready、無警報、無 Interlock → 接通主繼電器 → 等 3 秒以上 → Power ON。
 - 控制只准伺服器本機（`127.0.0.1`／`::1`）；從其他電腦開網頁只能看，面板會停用所有控制鈕，但「緊急關閉」仍可按。
 - 除了 U／I／P，其他參數會寫入電源的 EEPROM，只能在輸出關閉時寫，寫完會讀回比對；通訊相關設定（介面、鮑率、位址、逾時等）只顯示、不開放寫入。
-- 套用配方（手動面板）或「檢驗 Sensor」時，寫完會再讀回 ch33（脈衝模式）、ch140（低頻模式）、ch1100（低頻設定值）或 ch51130（頻率設定值）、ch51131（佔空比）逐一比對；不一致就列出通道、寫入值、讀回值並拒絕開啟輸出，直到重新套用且讀回一致。檢驗結果另外顯示電源回報的實際頻率（ch51140）、實際佔空比（ch51141）與 Off Time（ch650）讀回值。
-- 未在真機驗證：ch33 的寫入方式、單極 1000 Hz 以下切到低頻模式（ch140＝1＋ch1100）、雙極負向 B = 100 − A 佔空比（不含 off time）、ch650 Off Time 的意義（曾讀到 80，手冊範圍 1–20，超出時網頁標「超出手冊範圍」）。
+- 套用配方（手動面板）或「檢驗Sensor與電供」時，寫完會再讀回 ch33（脈衝模式）、ch140（低頻模式）、ch1100（低頻設定值）或 ch51130（頻率設定值）、ch51131（佔空比）逐一比對，雙極再加 ch650（Off Time，由正向／負向導通 % 換算後一併寫入）；不一致就列出通道、寫入值、讀回值並拒絕開啟輸出，直到重新套用且讀回一致。檢驗結果另外顯示電源回報的實際頻率（ch51140）、實際佔空比（ch51141）與 Off Time（ch650）讀回值。
+- 未在真機驗證：ch33 的寫入方式、單極 1000 Hz 以下切到低頻模式（ch140＝1＋ch1100）、雙極換算（假設 ch650 Off Time 單位是週期 %：off = (100 − 正向 − 負向) / 2、占空比 = 正向 + off，換算集中在 `params.bipulse_timing`）、ch650 的實際單位（曾讀到 80，手冊範圍 1–20，超出時網頁標「超出手冊範圍」）。
 - 電源使用中，溫度計 COM 自動偵測會略過電源的埠。
 
 **CSV**：實驗錄製中且電源已連線時，資料夾內會有 `truplasma_<id>.csv`（UTF-8 BOM，每 0.5 秒一列；實驗中途才連線則從連線那刻開始）。欄位：`Timestamp, Elapsed(s), Phase, Uset_V, Iset_A, Pset_kW, Uact_V, Iact_peak_A, Pact_kW`，接著是 `Uavg_A_V, Iavg_A_A, Pavg_A_kW, Uavg_B_V, Iavg_B_A, Pavg_B_kW, Freq_Hz, Duty_pct, T_OutputCores_C`，最後是 `RelaysOn, PowerOn, Interlock, AlarmActive, WarningActive, AlarmCode, Mode, Regulation, ArcRate_per_s, ArcCnt_Imax, ArcCnt_UxI, ArcCnt_dU, ArcCnt_Usag, ArcCnt_ArcBurst, Bits0, Bits1, Bits2, Bits3`（布林為 0／1；讀不到的量測值留空）。網頁另有 PSU Voltage A / B（畫 `Uavg_A_V`、`Uavg_B_V`，不是 `Uact_V`）、PSU Current A / B（畫 `Iavg_A_A`、`Iavg_B_A`，不是 `Iact_peak_A`；雙極脈衝下峰值欄位會低估，例如 EXP_20261030_173239 的 Iact_peak 最大 2.9 A、Iavg_A 卻到 5.2 A）兩張曲線。

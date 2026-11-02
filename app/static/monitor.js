@@ -972,7 +972,7 @@
     const d = duration;
     if (phase === "idle" || phase === "checking") {
       prog.classList.remove("indeterminate"); bar.style.width = "0";
-      $("time-sub").textContent = phase === "checking" ? "檢驗 Sensor 試收中（不存檔）" : "尚未開始錄製";
+      $("time-sub").textContent = phase === "checking" ? "檢驗Sensor與電供 試收中（不存檔）" : "尚未開始錄製";
       return;
     }
     if (d > 0) {
@@ -1114,13 +1114,13 @@
   $("label_specimen_thickness_c").addEventListener("input", (e) => { $("label_specimen_thickness").value = e.target.value; });
 
   // ------------------------------------------------------------------
-  // 正式實驗流程：① 標籤 → ② 電源參數＋實驗時間 → 檢驗 Sensor → 開始實驗（確認視窗）
+  // 正式實驗流程：① 標籤 → ② 電源參數＋實驗時間 → 檢驗Sensor與電供 → 開始實驗（確認視窗）
   // 開始後的順序（錄製 → 基線 → 主繼電器 → 輸出 ON → 計時 → 到時關輸出並停止錄製）全部在伺服器端執行，
   // 瀏覽器關掉也照跑；這裡只負責按鈕的啟用/停用與顯示。
   // ------------------------------------------------------------------
   const RECIPE_MAX = { u: 1000, i: 25, p: 10 }; // 額定值；連上伺服器後以 /api/psu/state 的 recipe_limits 為準
   const MODE_NAMES = { bipulse: "雙極", mono_a: "單極 A", mono_b: "單極 B" };
-  let checkResult = null;   // 最近一次「檢驗 Sensor」結果；任何輸入改變就作廢，要重新檢驗
+  let checkResult = null;   // 最近一次「檢驗Sensor與電供」結果；任何輸入改變就作廢，要重新檢驗
   let clockOffset = 0;      // 本機時鐘 − 伺服器時鐘（秒），倒數計時用
   let manualMode = false;
   let prevExpActive = false;
@@ -1137,11 +1137,16 @@
     } else sec = Number(text);
     return Number.isFinite(sec) && sec > 0 && sec <= 86400 ? sec : NaN;
   }
+  function expTimeText() { // 分、秒兩格 → 「分:秒」字串（後端 parse_exp_time 照舊）；兩格都空 → ""
+    const m = $("exp-time-m").value.trim(), sec = $("exp-time-s").value.trim();
+    return m === "" && sec === "" ? "" : `${m || 0}:${sec || 0}`;
+  }
   function expRecipe() {
     const mono = document.querySelector('input[name="exp-kind"]:checked').value === "mono";
     const num = (id) => ($(id).value.trim() === "" ? NaN : Number($(id).value));
     return { mode: mono ? `mono_${document.querySelector('input[name="exp-pole"]:checked').value}` : "bipulse",
-      freq_hz: num("exp-freq"), duty_pct: num("exp-duty"), u: num("exp-u"), i: num("exp-i"), p: num("exp-p") };
+      freq_hz: num("exp-freq"), ...(mono ? { duty_pct: num("exp-duty") } : { pos_pct: num("exp-pos"), neg_pct: num("exp-neg") }),
+      u: num("exp-u"), i: num("exp-i"), p: num("exp-p") };
   }
   function recipeErrors(r) {
     const errs = [], bi = r.mode === "bipulse", lim = psu.limits && psu.limits.u ? psu.limits : RECIPE_MAX;
@@ -1149,15 +1154,20 @@
       if (!Number.isFinite(v) || (open ? v <= lo : v < lo) || v > hi) errs.push(`${name}須${open ? "大於" : "介於"} ${lo}${open ? "、不超過" : "–"}${hi} ${unit}`);
     };
     range(r.freq_hz, bi ? 1000 : 1, bi ? 50000 : 100000, "頻率", "Hz");
-    range(r.duty_pct, 1, 99, "佔空比", "%");
+    if (bi) {
+      range(r.pos_pct, 1, 98, "正向導通", "%");
+      range(r.neg_pct, 1, 98, "負向導通", "%");
+      const t = bipulseTiming(r.pos_pct, r.neg_pct);
+      if (t.error && Number.isFinite(r.pos_pct) && Number.isFinite(r.neg_pct)) errs.push(t.error);
+    } else range(r.duty_pct, 1, 99, "佔空比", "%");
     range(r.u, 0, lim.u, "電壓上限", "V", true);
     range(r.i, 0, lim.i, "電流上限", "A", true);
     range(r.p, 0, lim.p, "功率上限", "kW", true);
-    if (!Number.isFinite(parseExpTime($("exp-time").value))) errs.push("實驗時間必填（分:秒，例如 10:00，或秒數）");
+    if (!Number.isFinite(parseExpTime(expTimeText()))) errs.push("實驗時間必填（分、秒），秒須 0–59，總長大於 0");
     return errs;
   }
   function flowBody() {
-    return { ...readForm(), recipe: expRecipe(), exp_time: $("exp-time").value.trim(),
+    return { ...readForm(), recipe: expRecipe(), exp_time: expTimeText(),
       psu_port: $("exp-port").value.trim() || "COM8" };
   }
   const CHECK_VALID_MS = 5 * 60 * 1000; // 與 web_monitor.CHECK_VALID_S 一致：超過 5 分鐘要重新檢驗
@@ -1184,14 +1194,15 @@
     $("step-psu").dataset.done = labelsOk && !rErrs.length ? "1" : "0";
     $("step-psu-hint").hidden = labelsOk;
     $("exp-pole-box").hidden = bi;
-    $("exp-duty-label").textContent = bi ? "正向 A 佔空比" : "佔空比";
+    $("exp-duty-field").hidden = bi;
+    $("exp-pos-field").hidden = $("exp-neg-field").hidden = !bi;
     renderPulseHints(r, $("exp-freq-hint"), $("exp-duty-hint"), checkResult && checkResult.readback && checkResult.readback.channels);
     $("exp-error").hidden = !(labelsOk && idle && rErrs.length);
     $("exp-error").textContent = rErrs.join("、");
-    // 檢驗 Sensor → 開始實驗
+    // 檢驗Sensor與電供 → 開始實驗
     const ready = idle && !busy && labelsOk && !rErrs.length;
     $("btn-check").disabled = !ready;
-    $("btn-check").textContent = checking ? "檢驗中…" : "檢驗 Sensor";
+    $("btn-check").textContent = checking ? "檢驗中…" : "檢驗Sensor與電供";
     $("btn-exp-start").disabled = !(ready && checkResult && checkResult.can_start && !checkExpired());
     $("btn-sensor-test").disabled = !idle || busy;
     // 結束實驗／結束這場／停止錄製
@@ -1264,6 +1275,9 @@
         + ` · 電源回報實際頻率 ${fmtNum(a.freq_hz, 0)} Hz、實際佔空比 ${fmtNum(a.duty_pct, 1)} %`);
     }
     (r.system_errors || []).forEach((e) => row(false, "系統", e));
+    // 收合的設定出問題：自動展開對應區塊，讓人看得到要改哪裡
+    if ((r.psu_errors || []).some((e) => /連線/.test(e))) $("exp-conn").open = true;
+    if ((r.system_errors || []).length) $("dev-fold").open = true;
     Object.values(r.sensors).forEach((v) => row(v.ok, v.name, v.ok ? `正常（有效數據 ${v.valid} 筆）` : `${v.reason_label}：${v.detail}`));
   }
 
@@ -1287,11 +1301,11 @@
   async function onExpStart() {
     const chk = checkResult;
     if (busy || !chk || !chk.can_start) return;
-    if (checkExpired()) { invalidateCheck(); await showError(["檢驗結果已超過 5 分鐘，請重新「檢驗 Sensor」"]); return; }
+    if (checkExpired()) { invalidateCheck(); await showError(["檢驗結果已超過 5 分鐘，請重新「檢驗Sensor與電供」"]); return; }
     const body = flowBody();
     if (chk.missing.length) {
       const go = await dialog({
-        title: "部分 sensor 異常", lead: "檢驗 Sensor 發現以下問題，這場將沒有這些資料（存檔與摘要會標記缺少）：",
+        title: "部分 sensor 異常", lead: "檢驗Sensor與電供 發現以下問題，這場將沒有這些資料（存檔與摘要會標記缺少）：",
         items: chk.missing.map((m) => `${m.name}：${m.reason_label}：${m.detail}`),
         question: "建議先排除問題再開始。仍要開始？", okText: "仍要開始", cancelText: "取消",
       });
@@ -1302,7 +1316,9 @@
     const ok = await dialog({
       title: "確認輸出高壓",
       lead: "即將開始正式實驗並輸出高壓（最高 1000 V / 25 A / 10 kW）。請確認電解槽與安全防護都已就緒。",
-      items: [`模式：${MODE_NAMES[r0.mode] || r0.mode}`, `頻率 ${r0.freq_hz} Hz · 佔空比 ${r0.duty_pct} %`,
+      items: [`模式：${MODE_NAMES[r0.mode] || r0.mode}`, r0.mode === "bipulse"
+        ? `頻率 ${r0.freq_hz} Hz · 正向導通 ${r0.pos_pct} % · 負向導通 ${r0.neg_pct} %`
+        : `頻率 ${r0.freq_hz} Hz · 佔空比 ${r0.duty_pct} %`,
         `電壓上限 U：${r0.u} V`, `電流上限 I：${r0.i} A`, `功率上限 P：${r0.p} kW`,
         `實驗時間：${fmtSpan(parseExpTime(body.exp_time))}`,
         `先錄 ${chk.baseline_s} 秒基線（電源關閉）才開啟輸出；時間到自動關閉輸出並停止錄製`],
@@ -1396,13 +1412,13 @@
     manualMode = on;
     $("psu-panel").hidden = !on;
     $("btn-manual").setAttribute("aria-pressed", on ? "true" : "false");
-    $("btn-manual").textContent = on ? "離開手動模式" : "手動模式";
+    $("btn-manual").textContent = on ? "離開電供設定手動模式" : "電供設定手動模式";
   }
   async function onManual() {
     if (!manualMode) {
       const ok = await dialog({
-        title: "手動模式", lead: "直接操作電源面板（接電阻測試、維修用）。",
-        items: ["這個模式不會錄製資料"], question: "進入手動模式？", okText: "進入手動模式", cancelText: "取消",
+        title: "電供設定手動模式", lead: "直接操作電源面板（接電阻測試、維修用）。",
+        items: ["這個模式不會錄製資料"], question: "進入電供設定手動模式？", okText: "進入電供設定手動模式", cancelText: "取消",
       });
       if (!ok) return;
     }
@@ -1428,14 +1444,16 @@
   function recipeInputs() {
     const mono = document.querySelector('input[name="psu-kind"]:checked').value === "mono";
     return { mode: mono ? `mono_${document.querySelector('input[name="psu-pole"]:checked').value}` : "bipulse",
-      freq_hz: recipeNumber("psu-freq"), duty_pct: recipeNumber("psu-duty"),
+      freq_hz: recipeNumber("psu-freq"), ...(mono ? { duty_pct: recipeNumber("psu-duty") } : { pos_pct: recipeNumber("psu-pos"), neg_pct: recipeNumber("psu-neg") }),
       u: recipeNumber("psu-sp-u"), i: recipeNumber("psu-sp-i"), p: recipeNumber("psu-sp-p") };
   }
 
   function currentRecipe() {
     const p = psu.params, sp = psu.snap.setpoints;
     return { mode: ({4: "mono_a", 8: "mono_b", 32: "bipulse"})[p[33]] || "未知",
-      freq_hz: p[140] ? p[1100] : p[51130] * 1000, duty_pct: p[51131], ...sp };
+      freq_hz: p[140] ? p[1100] : p[51130] * 1000, duty_pct: p[51131],
+      // 雙極：由 ch51131／ch650 反推（假設見 bipulseTiming，未在真機驗證）
+      pos_pct: p[51131] - p[650], neg_pct: 100 - p[51131] - p[650], ...sp };
   }
 
   function recipeChanged(key, a, b) {
@@ -1444,7 +1462,19 @@
     return key === "freq_hz" ? Math.round(a * 10) !== Math.round(b * 10) : Math.abs(a - b) >= 1e-6;
   }
 
-  // 頻率／佔空比欄位下方的提示（正式流程與手動面板共用）：低頻模式、雙極 B = 100 − A、Off Time（ch650）讀回。
+  // 雙極：正向 a %、負向 b % → 占空比與關斷時間（週期的 %）。
+  // 必須與 sensors/truplasma_package/params.py 的 bipulse_timing 一致；【假設 Off 單位為週期 %，未在真機驗證】。
+  function bipulseTiming(a, b) {
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: "請輸入正向／負向導通 %" };
+    const total = a + b;
+    if (!Number.isInteger(total) || total % 2) return { error: `正向 + 負向導通 % 必須是偶數（目前 ${total}）` };
+    const off = (100 - total) / 2, duty = a + off;
+    if (off < 1 || off > 20) return { error: `正向 + 負向導通 % 需在 60–98 之間（目前 ${total}，關斷時間 ${off} % 超出 1–20）` };
+    if (duty < 1 || duty > 99) return { error: `換算後占空比 ${duty} % 超出 1–99` };
+    return { duty, off };
+  }
+
+  // 頻率／導通欄位下方的提示（正式流程與手動面板共用）：低頻模式、雙極換算結果、Off Time（ch650）讀回。
   // channels：最近一次檢驗的讀回值（沒有就用手動面板讀到的 psu.params）
   function renderPulseHints(r, freqEl, dutyEl, channels, freqBase) {
     const bi = r.mode === "bipulse";
@@ -1456,9 +1486,14 @@
     dutyEl.textContent = "";
     dutyEl.hidden = !bi;
     if (!bi) return;
-    const timing = r.freq_hz > 0
-      ? ` · A ${(1000000 / r.freq_hz * r.duty_pct / 100).toFixed(1)} µs / B ${(1000000 / r.freq_hz * (100 - r.duty_pct) / 100).toFixed(1)} µs` : "";
-    dutyEl.append(`負向 B = ${100 - r.duty_pct} %${timing}（不含 off time，未在真機驗證）· Off Time（ch650）讀回 `);
+    const t = bipulseTiming(r.pos_pct, r.neg_pct);
+    if (t.error) { dutyEl.append(t.error); }
+    else {
+      const us = (pct) => (r.freq_hz > 0 ? ` ${(1000000 / r.freq_hz * pct / 100).toFixed(1)} µs` : "");
+      dutyEl.append(`換算：占空比 ${t.duty} %、關斷時間 ${t.off} %（每次關斷${us(t.off) || " --"}）`
+        + ` · 正向導通${us(r.pos_pct) || " --"} / 負向導通${us(r.neg_pct) || " --"}（換算公式未在真機驗證）`);
+    }
+    dutyEl.append(" · Off Time（ch650）讀回 ");
     const off = channels && channels["650"] != null ? channels["650"] : psu.params[650];
     const span = document.createElement("span");
     if (off == null) span.textContent = "--（尚未讀取）";
@@ -1479,7 +1514,8 @@
   function updateRecipe() {
     const r = recipeInputs(), bi = r.mode === "bipulse";
     $("psu-pole-box").hidden = bi;
-    $("psu-duty-label").textContent = bi ? "正向 A 佔空比" : "佔空比";
+    $("psu-duty-field").hidden = bi;
+    $("psu-pos-field").hidden = $("psu-neg-field").hidden = !bi;
     renderPulseHints(r, $("psu-freq-hint"), $("psu-duty-hint"), null, bi ? "1000–50000 Hz" : "1–100000 Hz；1000 Hz 以下自動使用低頻模式");
     const cur = psu.snap && Object.keys(psu.params).length ? currentRecipe() : null;
     const note = $("psu-mode-note");
@@ -1487,7 +1523,7 @@
     note.textContent = note.hidden ? "" : `電源目前是 ${modeName(cur.mode)} 模式（不在單極／雙極選項），套用後會改成所選模式`;
     const fields = [
       ["freq", r.freq_hz, bi ? 1000 : 1, bi ? 50000 : 100000],
-      ["duty", r.duty_pct, 1, 99],
+      ...(bi ? [["pos", r.pos_pct, 1, 98], ["neg", r.neg_pct, 1, 98]] : [["duty", r.duty_pct, 1, 99]]),
       ...["u", "i", "p"].map((k) => ["sp-" + k, r[k], 0, psu.limits[k]])
     ];
     let valid = true;
@@ -1501,6 +1537,13 @@
       $("psu-" + id).setAttribute("aria-invalid", showValidation && invalid ? "true" : "false");
       valid = valid && !invalid;
     });
+    if (bi) {
+      const t = bipulseTiming(r.pos_pct, r.neg_pct), el = $("psu-neg-validation");
+      if (t.error && Number.isFinite(r.pos_pct) && Number.isFinite(r.neg_pct)) {
+        valid = false;
+        if (cur && psu.snap.connected && !el.textContent) { el.dataset.level = "error"; el.textContent = t.error; }
+      }
+    }
     const dirty = !!cur && recipeChanges(r, cur).length > 0;
     $("psu-dirty").hidden = !dirty;
     const apply = $("psu-apply"), enabled = dirty && valid && psu.canControl && psu.snap.phase === "idle";
@@ -1515,6 +1558,7 @@
     document.querySelector(`input[name="psu-kind"][value="${r.mode.startsWith("mono") ? "mono" : "bi"}"]`).checked = true;
     if (r.mode.startsWith("mono")) document.querySelector(`input[name="psu-pole"][value="${r.mode.slice(-1)}"]`).checked = true;
     $("psu-freq").value = r.freq_hz || ""; $("psu-duty").value = r.duty_pct ?? "";
+    $("psu-pos").value = Number.isFinite(r.pos_pct) ? r.pos_pct : ""; $("psu-neg").value = Number.isFinite(r.neg_pct) ? r.neg_pct : "";
     ["u", "i", "p"].forEach((k) => { $("psu-sp-" + k).value = k === "p" && r.p === 0 ? psu.limits.p_default : r[k]; });
     updateRecipe();
   }
@@ -1671,7 +1715,7 @@
 
   async function onPsuApply() {
     const next = recipeInputs(), cur = currentRecipe();
-    const labels = { mode: "模式", freq_hz: "頻率 Hz", duty_pct: "佔空比 %", u: "電壓 V", i: "電流 A", p: "功率 kW" };
+    const labels = { mode: "模式", freq_hz: "頻率 Hz", duty_pct: "佔空比 %", pos_pct: "正向導通 %", neg_pct: "負向導通 %", u: "電壓 V", i: "電流 A", p: "功率 kW" };
     const changes = recipeChanges(next, cur);
     if ($("psu-apply").disabled || !changes.length) return;
     const items = changes.map((k) => `${labels[k]}：${k === "mode" ? modeName(cur[k]) : (cur[k] ?? "—")} → ${k === "mode" ? modeName(next[k]) : next[k]}`);
@@ -1829,7 +1873,7 @@
   $("btn-estop").addEventListener("click", onEstop);
   $("btn-sensor-test").addEventListener("click", onSensorTest);
   $("btn-manual").addEventListener("click", onManual);
-  // 流程或裝置設定任何輸入改變：上一次的檢驗結果作廢，要重新「檢驗 Sensor」
+  // 流程或裝置設定任何輸入改變：上一次的檢驗結果作廢，要重新「檢驗Sensor與電供」
   document.querySelectorAll("#flow input, #settings input, #settings select").forEach((el) => {
     el.addEventListener("input", invalidateCheck);
     el.addEventListener("change", invalidateCheck);

@@ -17,7 +17,7 @@
     <div class="topbar-meta">
       <span class="chip chip-sim" id="sim-chip" hidden title="這些感測器的數值是模擬產生的，不是真實量測">模擬模式</span>
       <a class="chip" href="/history" style="text-decoration:none" title="瀏覽過去的實驗並把數據畫成圖">實驗紀錄</a>
-      <button type="button" class="chip chip-btn" id="btn-manual" title="直接操作電源面板（不會錄製資料）">手動模式</button>
+      <button type="button" class="chip chip-btn" id="btn-manual" title="直接操作電源面板（不會錄製資料）">電供設定手動模式</button>
       <span class="chip" id="conn-chip" title="與伺服器的即時連線"><span class="dot" data-level="idle"></span><span id="conn-text">連線中</span></span>
       <!-- 緊急停止：電源連線後固定在右上角；正式實驗中按下後感測器繼續錄，由使用者按「停止錄製」結束 -->
       <button type="button" class="btn-estop btn-estop-top" id="btn-estop" hidden>緊急停止</button>
@@ -27,7 +27,7 @@
   <div class="layout">
     <!-- 左側：設定與控制 -->
     <aside class="sidebar" aria-label="設定">
-      <!-- 正式實驗流程（docs/plans/experiment-ux-flow.md）：① 標籤 → ② 電源參數 → 檢驗 Sensor → 開始實驗。上一步沒完成，下一步不能按 -->
+      <!-- 正式實驗流程（docs/plans/experiment-ux-flow.md）：① 標籤 → ② 電源參數 → 檢驗Sensor與電供 → 開始實驗。上一步沒完成，下一步不能按 -->
       <div id="flow" autocomplete="off">
         <section class="group step" id="step-labels">
           <h2><span class="step-no">1</span>實驗標籤</h2>
@@ -75,22 +75,30 @@
           </div>
           <div class="grid-2">
             <label class="field"><span class="field-label">頻率</span><div class="input-unit"><input id="exp-freq" inputmode="decimal" value="1000"><span>Hz</span></div><small class="field-hint" id="exp-freq-hint" hidden></small></label>
-            <label class="field"><span class="field-label" id="exp-duty-label">正向 A 佔空比</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"><span>%</span></div><small class="field-hint" id="exp-duty-hint" hidden></small></label>
+            <label class="field" id="exp-duty-field" hidden><span class="field-label">佔空比</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"><span>%</span></div></label>
+            <label class="field" id="exp-pos-field"><span class="field-label">正向導通</span><div class="input-unit"><input id="exp-pos" inputmode="decimal" value="45"><span>%</span></div></label>
+            <label class="field" id="exp-neg-field"><span class="field-label">負向導通</span><div class="input-unit"><input id="exp-neg" inputmode="decimal" value="45"><span>%</span></div><small class="field-hint" id="exp-duty-hint" hidden></small></label>
             <label class="field"><span class="field-label">電壓上限 U <b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"><span>V</span></div></label>
             <label class="field"><span class="field-label">電流上限 I <b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"><span>A</span></div></label>
             <label class="field"><span class="field-label">功率上限 P</span><div class="input-unit"><input id="exp-p" inputmode="decimal" value="10"><span>kW</span></div></label>
-            <label class="field"><span class="field-label">實驗時間 <b class="req">*</b></span><input id="exp-time" placeholder="分:秒 或 秒，例 10:00" spellcheck="false"></label>
-            <label class="field span-2"><span class="field-label">電源 COM 埠</span><input id="exp-port" value="COM8" placeholder="COM8" spellcheck="false"></label>
+            <label class="field"><span class="field-label">實驗時間 <b class="req">*</b></span><div class="exp-time-row" role="group" aria-label="實驗時間（分、秒）">
+              <div class="input-unit"><input id="exp-time-m" type="number" min="0" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（分）"><span>分</span></div>
+              <div class="input-unit"><input id="exp-time-s" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（秒）"><span>秒</span></div>
+            </div></label>
+            <details class="field span-2 exp-conn" id="exp-conn">
+              <summary class="field-label">連線設定（電源 COM 埠）</summary>
+              <label class="field"><span class="field-label">電源 COM 埠</span><input id="exp-port" value="COM8" placeholder="COM8" spellcheck="false"></label>
+            </details>
           </div>
           <p class="labels-error" id="exp-error" role="alert" hidden></p>
-          <span class="field-hint">按「檢驗 Sensor」就會把以上參數<b>寫入電源</b>（EEPROM）並讀回比對；開始前再確認一次。檢驗結果 5 分鐘內有效；實驗中鎖定，不能修改</span>
+          <span class="field-hint">按「檢驗Sensor與電供」就會把以上參數<b>寫入電源</b>（EEPROM）並讀回比對；開始前再確認一次。檢驗結果 5 分鐘內有效；實驗中鎖定，不能修改</span>
         </fieldset>
       </div>
 
       <form id="settings" autocomplete="off" novalidate>
 
-        <section class="group">
-          <h2>裝置</h2>
+        <details class="group group-fold" id="dev-fold">
+          <summary><h2>裝置</h2></summary>
           <label class="field">
             <span class="field-label">溫度感測器 COM 端口</span>
             <div class="field-row">
@@ -111,7 +119,7 @@
               </button>
             </div>
           </label>
-        </section>
+        </details>
 
         <details class="group group-fold">
           <summary><h2>音訊參數</h2></summary>
@@ -184,7 +192,7 @@
       </form>
 
       <div class="controls">
-        <button type="button" class="btn btn-ghost" id="btn-check" disabled title="試收四個感測器 3 秒，並把電源參數寫入電源、讀回比對">檢驗 Sensor</button>
+        <button type="button" class="btn btn-ghost" id="btn-check" disabled title="試收四個感測器 3 秒，並把電源參數寫入電源、讀回比對">檢驗Sensor與電供</button>
         <button type="button" class="btn btn-start" id="btn-exp-start" disabled>開始實驗</button>
         <button type="button" class="btn btn-stop span-2" id="btn-stop" disabled>結束實驗</button>
       </div>
@@ -240,7 +248,7 @@
 
       <!-- 電源供應器（TRUMPF TruPlasma Bipolar 4010）：獨立於實驗的開始／停止，由使用者明確連線；控制只准本機 -->
       <section class="psu" id="psu-panel" aria-label="電源 TruPlasma" hidden>
-        <p class="psu-banner" data-level="warning">手動模式：這個模式不會錄製資料</p>
+        <p class="psu-banner" data-level="warning">電供設定手動模式：這個模式不會錄製資料</p>
         <header class="psu-head">
           <h2>電源 TruPlasma <span class="sim-tag" data-sim="psu" hidden>模擬</span></h2>
           <span class="sr-badge" id="psu-phase" data-tone="neutral">未連線</span>
@@ -261,7 +269,9 @@
             <div class="field"><span class="field-label">模式</span><div class="seg"><label><input type="radio" name="psu-kind" value="mono"><span>單極</span></label><label><input type="radio" name="psu-kind" value="bi" checked><span>雙極</span></label></div></div>
             <div class="field" id="psu-pole-box" hidden><span class="field-label">輸出</span><div class="seg"><label><input type="radio" name="psu-pole" value="a" checked><span>A</span></label><label><input type="radio" name="psu-pole" value="b"><span>B</span></label></div></div>
             <label class="field"><span class="field-label">頻率 Hz</span><input id="psu-freq" type="number" min="1" max="100000" step="any"><small id="psu-freq-validation" aria-live="polite"></small><small id="psu-freq-hint"></small></label>
-            <label class="field"><span class="field-label" id="psu-duty-label">正向 A 佔空比</span><input id="psu-duty" type="number" min="1" max="99" step="any"><small id="psu-duty-validation" aria-live="polite"></small><small id="psu-duty-hint"></small></label>
+            <label class="field" id="psu-duty-field" hidden><span class="field-label">佔空比</span><input id="psu-duty" type="number" min="1" max="99" step="any"><small id="psu-duty-validation" aria-live="polite"></small></label>
+            <label class="field" id="psu-pos-field"><span class="field-label">正向導通 %</span><input id="psu-pos" type="number" min="1" max="98" step="any"><small id="psu-pos-validation" aria-live="polite"></small></label>
+            <label class="field" id="psu-neg-field"><span class="field-label">負向導通 %</span><input id="psu-neg" type="number" min="1" max="98" step="any"><small id="psu-neg-validation" aria-live="polite"></small><small id="psu-duty-hint"></small></label>
             <label class="field"><span class="field-label">電壓上限 V</span><input id="psu-sp-u" type="number" min="0" step="any"><small id="psu-sp-u-validation" aria-live="polite"></small></label>
             <label class="field"><span class="field-label">電流上限 A</span><input id="psu-sp-i" type="number" min="0" step="any"><small id="psu-sp-i-validation" aria-live="polite"></small></label>
           </div>

@@ -17,7 +17,7 @@ from truplasma_package import controller as ctl
 
 LABELS = {"label_metal": "Al", "label_electrolyte": "test", "label_specimen_shape": "square",
           "label_specimen_length": "10", "label_specimen_width": "10", "label_specimen_thickness": "1"}
-RECIPE = {"mode": "bipulse", "freq_hz": 1000, "duty_pct": 50, "u": 100, "i": 2, "p": 1}
+RECIPE = {"mode": "bipulse", "freq_hz": 1000, "pos_pct": 45, "neg_pct": 45, "u": 100, "i": 2, "p": 1}
 OUTPUT_PHASES = ("relays", "powering", "on")
 
 
@@ -203,7 +203,7 @@ def test_stale_check_reused_after_failed_recheck(svc):
     assert code == 400
     assert svc._check_result is None
     res, code = svc.exp_start(body(confirm_output=True))
-    assert code == 400 and "檢驗 Sensor" in res["errors"][0]
+    assert code == 400 and "檢驗Sensor與電供" in res["errors"][0]
 
 
 def test_check_expires(svc, monkeypatch):
@@ -212,7 +212,7 @@ def test_check_expires(svc, monkeypatch):
     monkeypatch.setattr(wm, "CHECK_VALID_S", 0)
     time.sleep(0.05)
     res, code = svc.exp_start(body(confirm_output=True))
-    assert code == 400 and "重新「檢驗 Sensor」" in res["errors"][0] and svc.recorder is None
+    assert code == 400 and "重新「檢驗Sensor與電供」" in res["errors"][0] and svc.recorder is None
 
 
 def test_check_must_match_start_params(svc):
@@ -284,7 +284,7 @@ def test_sensor_test_marks_passive_psu_logging(svc):
 # 第 2 輪：配方讀回通道、不一致擋開啟輸出、電流 A/B 曲線
 # ---------------------------------------------------------------------------
 def test_check_readback_channels_and_actual(svc):
-    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, duty_pct=40)))
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, pos_pct=30, neg_pct=50)))
     assert code == 200 and res["can_start"], res
     rb = res["readback"]
     assert set(rb["channels"]) == {"33", "140", "1100", "51130", "51131", "650"}
@@ -292,13 +292,13 @@ def test_check_readback_channels_and_actual(svc):
     assert rb["channels"]["51130"] == pytest.approx(5.0) and rb["channels"]["51131"] == pytest.approx(40)
     assert rb["channels"]["650"] is not None  # Off Time 只讀回顯示，不寫入
     assert wait_for(lambda: svc.psu.snapshot()["measurements"].get("Freq_Hz") == pytest.approx(5000), 3)
-    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, duty_pct=40)))
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, pos_pct=30, neg_pct=50)))
     assert res["readback"]["actual"] == {"freq_hz": pytest.approx(5000), "duty_pct": pytest.approx(40)}
     assert svc.psu_recipe_errors == []
 
 
 def test_check_low_frequency_unipolar_readback(svc):
-    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, mode="mono_a", freq_hz=500)))
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, mode="mono_a", freq_hz=500, duty_pct=50)))
     assert code == 200 and res["can_start"], res
     ch = res["readback"]["channels"]
     assert ch["33"] == 4 and ch["140"] == 1 and ch["1100"] == 500
