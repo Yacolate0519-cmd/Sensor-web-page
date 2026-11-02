@@ -79,9 +79,13 @@
             <label class="field" id="exp-pos-field"><span class="field-label">正向導通</span><div class="input-unit"><input id="exp-pos" inputmode="decimal" value="45"><span>%</span></div></label>
             <label class="field" id="exp-neg-field"><span class="field-label">負向導通</span><div class="input-unit"><input id="exp-neg" inputmode="decimal" value="45"><span>%</span></div></label>
             <small class="field-hint span-2" id="exp-duty-hint" hidden></small>
-            <label class="field"><span class="field-label">電壓上限 U <b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"><span>V</span></div></label>
-            <label class="field"><span class="field-label">電流上限 I <b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"><span>A</span></div></label>
+            <div class="field span-2"><span class="field-label">控制方式</span>
+              <div class="seg"><label><input type="radio" name="exp-control" value="cv" checked><span>定電壓</span></label><label><input type="radio" name="exp-control" value="cc"><span>定電流</span></label></div>
+            </div>
+            <label class="field" id="exp-u-field"><span class="field-label">電壓設定 U <b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"><span>V</span></div></label>
+            <label class="field" id="exp-i-field" hidden><span class="field-label">電流設定 I <b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"><span>A</span></div></label>
             <label class="field"><span class="field-label">功率上限 P</span><div class="input-unit"><input id="exp-p" inputmode="decimal" value="10"><span>kW</span></div></label>
+            <small class="field-hint span-2" id="exp-control-hint"></small>
             <label class="field"><span class="field-label">實驗時間 <b class="req">*</b></span><div class="exp-time-row" role="group" aria-label="實驗時間（分、秒）">
               <div class="input-unit"><input id="exp-time-m" type="number" min="0" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（分）"><span>分</span></div>
               <div class="input-unit"><input id="exp-time-s" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（秒）"><span>秒</span></div>

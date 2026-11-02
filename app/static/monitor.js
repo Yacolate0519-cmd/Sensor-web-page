@@ -1141,13 +1141,15 @@
     const m = $("exp-time-m").value.trim(), sec = $("exp-time-s").value.trim();
     return m === "" && sec === "" ? "" : `${m || 0}:${sec || 0}`;
   }
+  const expLimits = () => (psu.limits && psu.limits.u ? psu.limits : RECIPE_MAX);
   function expRecipe() {
+    const control = document.querySelector('input[name="exp-control"]:checked').value, lim = expLimits();
     const mono = document.querySelector('input[name="exp-kind"]:checked').value === "mono";
     const num = (id) => ($(id).value.trim() === "" ? NaN : Number($(id).value));
     return { mode: mono ? `mono_${document.querySelector('input[name="exp-pole"]:checked').value}` : "bipulse",
       freq_hz: num("exp-freq"), ...(mono ? { duty_pct: num("exp-duty") } : { pos_pct: num("exp-pos"), neg_pct: num("exp-neg") }),
-      u: num("exp-u"), i: num("exp-i"), p: num("exp-p") };
-  }
+      control, u: control === "cv" ? num("exp-u") : lim.u, i: control === "cc" ? num("exp-i") : lim.i, p: num("exp-p") };
+  } // 浮動那一邊先填額定上限；後端會自己重設，不信任這裡的值
   function recipeErrors(r) {
     const errs = [], bi = r.mode === "bipulse", lim = psu.limits && psu.limits.u ? psu.limits : RECIPE_MAX;
     const range = (v, lo, hi, name, unit, open) => {
@@ -1160,8 +1162,8 @@
       const t = bipulseTiming(r.pos_pct, r.neg_pct);
       if (t.error && Number.isFinite(r.pos_pct) && Number.isFinite(r.neg_pct)) errs.push(t.error);
     } else range(r.duty_pct, 1, 99, "佔空比", "%");
-    range(r.u, 0, lim.u, "電壓上限", "V", true);
-    range(r.i, 0, lim.i, "電流上限", "A", true);
+    range(r.u, 0, lim.u, r.control === "cv" ? "電壓設定" : "電壓上限", "V", true);
+    range(r.i, 0, lim.i, r.control === "cc" ? "電流設定" : "電流上限", "A", true);
     range(r.p, 0, lim.p, "功率上限", "kW", true);
     if (!Number.isFinite(parseExpTime(expTimeText()))) errs.push("實驗時間必填（分、秒），秒須 0–59，總長大於 0");
     return errs;
@@ -1193,6 +1195,11 @@
     $("step-psu").disabled = !idle || busy || !labelsOk;
     $("step-psu").dataset.done = labelsOk && !rErrs.length ? "1" : "0";
     $("step-psu-hint").hidden = labelsOk;
+    const cv = r.control === "cv", lim = expLimits();
+    $("exp-u-field").hidden = !cv;
+    $("exp-i-field").hidden = cv;
+    $("exp-control-hint").textContent = cv ? `電流不限（設為電源上限 ${lim.i} A），由功率上限 P 保護`
+      : `電壓不限（設為電源上限 ${lim.u} V），由功率上限 P 保護`;
     $("exp-pole-box").hidden = bi;
     $("exp-duty-field").hidden = bi;
     $("exp-pos-field").hidden = $("exp-neg-field").hidden = !bi;
@@ -1319,7 +1326,9 @@
       items: [`模式：${MODE_NAMES[r0.mode] || r0.mode}`, r0.mode === "bipulse"
         ? `頻率 ${r0.freq_hz} Hz · 正向導通 ${r0.pos_pct} % · 負向導通 ${r0.neg_pct} %`
         : `頻率 ${r0.freq_hz} Hz · 佔空比 ${r0.duty_pct} %`,
-        `電壓上限 U：${r0.u} V`, `電流上限 I：${r0.i} A`, `功率上限 P：${r0.p} kW`,
+        r0.control === "cv" ? `控制方式：定電壓（U = ${r0.u} V，I 不限＝${r0.i} A）`
+          : `控制方式：定電流（I = ${r0.i} A，U 不限＝${r0.u} V）`,
+        `功率上限 P：${r0.p} kW`,
         `實驗時間：${fmtSpan(parseExpTime(body.exp_time))}`,
         `先錄 ${chk.baseline_s} 秒基線（電源關閉）才開啟輸出；時間到自動關閉輸出並停止錄製`],
       question: "確定開始？", okText: "確認輸出高壓", cancelText: "取消",

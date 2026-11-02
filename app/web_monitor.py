@@ -1984,12 +1984,27 @@ class MonitorService:
             errors.append(str(e))
         recipe = None
         r = raw.get("recipe")
+        control = r.get("control") if isinstance(r, dict) else None
         try:
+            if control is not None:
+                # 定電壓／定電流：只需設定一邊，另一邊由後端設為電源額定上限（不信任前端送來的值）
+                if control not in ("cv", "cc"):
+                    raise ValueError("控制方式必須是 cv（定電壓）或 cc（定電流）")
+                main, free = ("u", "i") if control == "cv" else ("i", "u")
+                try:
+                    main_ok = float(r.get(main)) > 0
+                except (TypeError, ValueError):
+                    main_ok = False
+                if not main_ok:
+                    raise ValueError(f"{'電壓設定 U' if control == 'cv' else '電流設定 I'}必須大於 0")
+                r = {**r, free: RECIPE_LIMITS[free]}
             plan_recipe({}, r)  # 模式、頻率、佔空比、U/I/P 範圍（同電源面板的「套用設定」）
             recipe = {"mode": r["mode"], "freq_hz": float(r["freq_hz"]),
                       **({"pos_pct": float(r["pos_pct"]), "neg_pct": float(r["neg_pct"])} if r["mode"] == "bipulse"
                          else {"duty_pct": float(r["duty_pct"])}),
                       "u": float(r["u"]), "i": float(r["i"]), "p": float(r.get("p", RECIPE_LIMITS["p_default"]))}
+            if control is not None:
+                recipe["control"] = control
             if recipe["u"] <= 0 or recipe["i"] <= 0:
                 raise ValueError("電壓上限與電流上限都必須大於 0，否則電源不會輸出")
         except (ValueError, TypeError, KeyError) as e:
@@ -2029,6 +2044,7 @@ class MonitorService:
             raise RuntimeError("電源參數寫入後讀回不一致，不能開啟輸出：" + "；".join(mismatch))
         # actual：電源回報的實際頻率／佔空比（ch51140／51141，每輪心跳輪詢的量測值）
         return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"],
+                **({"control": recipe["control"]} if "control" in recipe else {}),
                 **({"pos_pct": recipe["pos_pct"], "neg_pct": recipe["neg_pct"]} if recipe["mode"] == "bipulse"
                    else {"duty_pct": recipe["duty_pct"]}),
                 "setpoints": dict(sp), "read_at": iso_now(),

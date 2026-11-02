@@ -130,6 +130,44 @@ def test_check_all_ok_writes_and_reads_back_recipe(svc):
     assert svc.phase == "idle" and svc.psu.phase == "idle"
 
 
+def recipe_body(**kw):
+    r = {k: v for k, v in RECIPE.items() if k not in ("u", "i")}
+    return dict(body(), recipe=dict(r, **kw))
+
+
+def test_control_cv_floats_current_at_rated_max(svc):
+    errors, recipe, _ = svc._exp_parse(recipe_body(control="cv", u=100, i=3))  # 前端送的 i 不被信任
+    assert not errors and recipe["control"] == "cv" and recipe["u"] == 100 and recipe["i"] == wm.RECIPE_LIMITS["i"] == 25
+    res, code = svc.exp_check(recipe_body(control="cv", u=100))
+    assert code == 200, res
+    assert res["readback"]["setpoints"] == {"u": 100.0, "i": 25.0, "p": 1.0}
+    assert res["readback"]["control"] == "cv" and res["recipe"]["control"] == "cv"
+
+
+def test_control_cc_floats_voltage_at_rated_max(svc):
+    errors, recipe, _ = svc._exp_parse(recipe_body(control="cc", i=2, u=5))
+    assert not errors and recipe["u"] == wm.RECIPE_LIMITS["u"] == 1000 and recipe["i"] == 2
+    res, code = svc.exp_check(recipe_body(control="cc", i=2))
+    assert code == 200, res
+    assert res["readback"]["setpoints"] == {"u": 1000.0, "i": 2.0, "p": 1.0}
+
+
+def test_control_requires_its_own_setpoint(svc):
+    errors, recipe, _ = svc._exp_parse(recipe_body(control="cv", i=2))
+    assert recipe is None and any("電壓設定" in e for e in errors)
+    errors, recipe, _ = svc._exp_parse(recipe_body(control="cc", u=100))
+    assert recipe is None and any("電流設定" in e for e in errors)
+    errors, recipe, _ = svc._exp_parse(recipe_body(control="xx", u=100, i=2))
+    assert recipe is None and errors
+
+
+def test_without_control_u_and_i_still_both_required(svc):
+    errors, recipe, _ = svc._exp_parse(recipe_body(u=100))
+    assert recipe is None and any("電源參數錯誤" in e for e in errors)
+    errors, recipe, _ = svc._exp_parse(recipe_body(u=100, i=2))
+    assert not errors and "control" not in recipe
+
+
 # 電源不正常不能開始 --------------------------------------------------------
 def test_psu_unreachable_cannot_start(svc, tmp_path):
     def fail():
