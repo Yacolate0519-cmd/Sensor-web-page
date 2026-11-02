@@ -8,7 +8,7 @@
     "spec_interval", "spec_integration_ms"];
   // 實驗標籤（正式實驗流程第一步，側欄 #step-labels）：[表單 id, 名稱]，必填檢查與 app/web_monitor.py 的 LABEL_FIELDS 一致
   const LABEL_REQUIRED = [["label_metal", "金屬種類"], ["label_electrolyte", "電解液配方與濃度"]];
-  // 試片尺寸（長度 mm、面積 mm²）：形狀 → [表單 id, 名稱]；對應 web_monitor.py 的 SPECIMEN_SHAPES
+  // 試片尺寸（長度 cm、面積 cm²）：形狀 → [表單 id, 名稱]；對應 web_monitor.py 的 SPECIMEN_SHAPES
   const SPECIMEN_DIMS = {
     square: [["label_specimen_length", "長"], ["label_specimen_width", "寬"], ["label_specimen_thickness", "厚"]],
     circle: [["label_specimen_area", "面積"], ["label_specimen_thickness", "厚度"]],
@@ -1091,7 +1091,7 @@
   function setSpecimenShape(shape) {
     document.querySelectorAll('input[name="label_specimen_shape"]').forEach((r) => { r.checked = r.value === shape; });
     document.querySelectorAll("#step-labels .dims").forEach((d) => { d.hidden = d.dataset.shape !== shape; });
-    $("specimen-hint").textContent = shape === "circle" ? "面積 mm²、厚度 mm" : "長 × 寬 × 厚，單位 mm";
+    $("specimen-hint").textContent = shape === "circle" ? "面積 cm²、厚度 cm" : "長 × 寬 × 厚，單位 cm";
   }
   function labelErrors() {
     const errs = LABEL_REQUIRED.filter(([k]) => !$(k).value.trim()).map(([, name]) => `${name}為必填`);
@@ -1330,6 +1330,7 @@
       const r = await api("/api/exp/start", { method: "POST", body: { ...body, confirm_output: true } });
       if (!r.ok) { await showError((r.data && r.data.errors) || [`開始實驗失敗 (HTTP ${r.status})`]); return; }
       checkResult = null; renderCheck();
+      flowModal.close();
       setupCharts(r.data.state.audio_meta, r.data.state.run_id);
       renderState(r.data.state);
     } catch (e) {
@@ -1863,6 +1864,51 @@
       if (r.run_id !== currentRun) setupCharts(r.audio_meta, r.run_id);
     });
   }
+
+  // ------------------------------------------------------------------
+  // 設定視窗：側欄 ①② 被 hover/點擊/focus 時，把原節點搬進置中 modal，關閉時搬回
+  // ------------------------------------------------------------------
+  const flowModal = (() => {
+    const modal = $("flow-modal"), body = $("flow-modal-body"), foot = $("flow-modal-foot");
+    const flow = $("flow"), controls = $("flow-controls"), check = $("check-result");
+    const sidebar = flow.parentNode;
+    let timer = null, lastFocus = null;
+    const isOpen = () => !modal.hidden;
+    function open() {
+      clearTimeout(timer);
+      if (isOpen() || activeExp(state)) return;
+      lastFocus = document.activeElement;
+      body.append(flow, check); foot.append(controls); // 按鈕固定在視窗底部，不隨內容捲動
+      modal.hidden = false;
+      document.body.style.overflow = "hidden";
+    }
+    function close() {
+      clearTimeout(timer);
+      if (!isOpen()) return;
+      modal.hidden = true;
+      document.body.style.overflow = "";
+      const anchor = $("settings");
+      sidebar.insertBefore(flow, anchor);
+      const tail = sidebar.querySelector(".controls-test");
+      sidebar.insertBefore(controls, tail); sidebar.insertBefore(check, tail);
+      if (lastFocus && lastFocus.isConnected && lastFocus.focus) lastFocus.focus();
+    }
+    const arm = () => { if (!isOpen() && !timer) timer = setTimeout(() => { timer = null; open(); }, 300); };
+    const disarm = () => { clearTimeout(timer); timer = null; };
+    ["step-labels", "step-psu"].forEach((id) => {
+      const el = $(id);
+      el.addEventListener("mouseenter", arm);
+      el.addEventListener("mouseleave", disarm);
+      el.addEventListener("click", open);
+      el.addEventListener("focusin", open);
+    });
+    $("flow-modal-close").addEventListener("click", close);
+    modal.addEventListener("mousedown", (e) => { if (e.target === modal) close(); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && isOpen() && !$("dlg").open) { e.preventDefault(); close(); }
+    });
+    return { open, close, isOpen };
+  })();
 
   // ------------------------------------------------------------------
   // 初始化

@@ -140,13 +140,13 @@ LABEL_FIELDS = [
 ]
 # 電源模式目前固定，不在介面顯示；之後要開放選擇再改回 LABEL_FIELDS
 POWER_MODE = "雙極脈衝"
-# 試片形狀 → (中文名稱, [(表單 key, JSON key, 中文名稱)])；長度 mm、面積 mm²，必填且須 > 0
+# 試片形狀 → (中文名稱, [(表單 key, JSON key, 中文名稱)])；長度 cm、面積 cm²（2026-11-02 起；舊資料為 *_mm），必填且須 > 0
 SPECIMEN_SHAPES = {
-    "square": ("正方形", [("label_specimen_length", "length_mm", "長"),
-                          ("label_specimen_width", "width_mm", "寬"),
-                          ("label_specimen_thickness", "thickness_mm", "厚")]),
-    "circle": ("圓形", [("label_specimen_area", "area_mm2", "面積"),
-                        ("label_specimen_thickness", "thickness_mm", "厚")]),
+    "square": ("正方形", [("label_specimen_length", "length_cm", "長"),
+                          ("label_specimen_width", "width_cm", "寬"),
+                          ("label_specimen_thickness", "thickness_cm", "厚")]),
+    "circle": ("圓形", [("label_specimen_area", "area_cm2", "面積"),
+                        ("label_specimen_thickness", "thickness_cm", "厚")]),
 }
 DEFAULT_PARAMS.update({form_key: "" for form_key, *_ in LABEL_FIELDS})
 DEFAULT_PARAMS.update({k: "" for _, dims in SPECIMEN_SHAPES.values() for k, *_ in dims})
@@ -1406,7 +1406,7 @@ class MonitorService:
     @staticmethod
     def validate_labels(raw):
         """實驗標籤：必填欄位不可空白；選填欄位留空時存成 None。
-        試片存成 {"shape": "square"|"circle", <尺寸>_mm: float, ...}。"""
+        試片存成 {"shape": "square"|"circle", <尺寸>_cm: float, ...}。"""
         labels = {}
         for form_key, json_key, label, required in LABEL_FIELDS:
             value = str(raw.get(form_key, "") or "").strip()

@@ -42,17 +42,17 @@
               <label><input type="radio" name="label_specimen_shape" value="circle"><span>圓形</span></label>
             </div>
             <div class="dims" data-shape="square">
-              <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（mm）"></div>
+              <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（cm）"></div>
               <span class="dims-x">×</span>
-              <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（mm）"></div>
+              <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（cm）"></div>
               <span class="dims-x">×</span>
-              <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（mm）"><span>mm</span></div>
+              <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（cm）"><span>cm</span></div>
             </div>
             <div class="dims" data-shape="circle" hidden>
-              <div class="input-unit"><input id="label_specimen_area" inputmode="decimal" placeholder="面積" aria-label="面積（mm²）"><span>mm²</span></div>
-              <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（mm）"><span>mm</span></div>
+              <div class="input-unit"><input id="label_specimen_area" inputmode="decimal" placeholder="面積" aria-label="面積（cm²）"><span>cm²</span></div>
+              <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（cm）"><span>cm</span></div>
             </div>
-            <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 mm</span>
+            <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 cm</span>
           </fieldset>
           <label class="field">
             <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
@@ -191,7 +191,7 @@
         </details>
       </form>
 
-      <div class="controls">
+      <div class="controls" id="flow-controls">
         <button type="button" class="btn btn-ghost" id="btn-check" disabled title="試收四個感測器 3 秒，並把電源參數寫入電源、讀回比對">檢驗Sensor與電供</button>
         <button type="button" class="btn btn-start" id="btn-exp-start" disabled>開始實驗</button>
         <button type="button" class="btn btn-stop span-2" id="btn-stop" disabled>結束實驗</button>
@@ -322,6 +322,15 @@
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <!-- 設定視窗：hover/點擊側欄 ①② 時，#flow、檢驗/開始按鈕、檢驗結果整個搬進來（monitor.js flowModal） -->
+  <div class="flow-modal" id="flow-modal" hidden>
+    <div class="flow-modal-card" role="dialog" aria-modal="true" aria-label="實驗設定">
+      <button type="button" class="flow-modal-close" id="flow-modal-close" aria-label="關閉">&#10005;</button>
+      <div class="flow-modal-body" id="flow-modal-body"></div>
+      <div class="flow-modal-foot" id="flow-modal-foot"></div>
+    </div>
+  </div>
 
   <dialog id="dlg">
     <form method="dialog" class="dlg-body">

@@ -491,3 +491,30 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .exp-bar[data-tone="test"] { background: var(--warn); border-color: var(--warn); }
 .exp-bar[data-tone="test"] .exp-bar-main, .exp-bar[data-tone="test"] .exp-bar-sub { color: #1a1400; }
 .psu[hidden] { display: none; }
+
+/* ---------- 設定視窗（置中 modal；內容為搬進來的 #flow 與檢驗/開始按鈕） ---------- */
+.flow-modal {
+  position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, .5);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.flow-modal[hidden] { display: none; }
+.flow-modal-card {
+  position: relative; width: min(720px, 92vw); max-height: min(90vh, 900px);
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.flow-modal-foot { flex: none; padding: 12px 22px 16px; border-top: 1px solid var(--border-strong); background: var(--surface); border-radius: 0 0 10px 10px; }
+.flow-modal-foot:empty { display: none; }
+.flow-modal-body { padding: 20px 22px 18px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+.flow-modal-close {
+  position: absolute; top: 8px; right: 10px; z-index: 1; width: 30px; height: 30px;
+  background: none; border: 0; border-radius: var(--radius-sm); color: var(--text-3);
+  font-size: 16px; line-height: 1; cursor: pointer;
+}
+.flow-modal-close:hover { background: var(--surface-2); color: var(--text); }
+@media (max-width: 600px) {
+  .flow-modal { padding: 0; }
+  .flow-modal-card { width: 100vw; max-height: 100vh; height: 100vh; border-radius: 0; border: 0; }
+}
