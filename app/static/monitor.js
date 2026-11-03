@@ -37,7 +37,7 @@
     return {
       bg: v("--chart-bg"), grid: v("--chart-grid"), axis: v("--chart-axis"),
       tick: v("--chart-tick"), text: v("--text-2"), faint: v("--text-3"),
-      wave: v("--chart-wave"), fft: v("--chart-fft"), // 沿用既有色票：距離用藍、溫度用紅
+      wave: v("--chart-wave"), fft: v("--chart-fft"), out: v("--chart-out"), // 沿用既有色票：距離用藍、溫度用紅
       warn: v("--warn"), font: v("--font"), mono: v("--mono"),
     };
   }
@@ -241,9 +241,9 @@
       const ctx = this.ctx;
       ctx.save();
       ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-      for (const { pts, color } of layers) {
+      for (const { pts, color, dash } of layers) {
         ctx.strokeStyle = color; ctx.fillStyle = color;
-        ctx.lineWidth = 1.25; ctx.lineJoin = "round";
+        ctx.lineWidth = 1.25; ctx.lineJoin = "round"; ctx.setLineDash(dash || []);
         ctx.beginPath();
         let pen = false, single = null; // pen：目前這段線已落筆；single：只有一個點的區段（補畫圓點）
         const dots = [];
@@ -255,14 +255,15 @@
           else { ctx.lineTo(px, py); single = null; }
         }
         if (single) dots.push(single);
-        ctx.stroke();
+        ctx.stroke(); ctx.setLineDash([]);
         dots.forEach(([px, py]) => { ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill(); });
       }
       ctx.restore();
-      layers.forEach((l) => this.drawLatest(p, X, Y, l.color, l.pts, l.tag));
+      const placed = []; // 已畫的標籤 y 範圍；兩極數值相同時標籤會疊在一起，往下錯開
+      layers.forEach((l) => this.drawLatest(p, X, Y, l.color, l.pts, l.tag, placed));
     }
     // 最新值標籤：圓點 + 圓角標籤，垂直置中於最後一個有效點；最新一筆為 null 時改警告樣式
-    drawLatest(p, X, Y, color, pts, tag) {
+    drawLatest(p, X, Y, color, pts, tag, placed = []) {
       let k = pts.length - 1;
       while (k >= 0 && pts[k][1] === null) k--;
       if (k < 0) return; // 完全沒有有效點
@@ -278,7 +279,15 @@
       const padX = 7, bh = 20, bw = Math.ceil(ctx.measureText(text).width) + padX * 2;
       // 預設放點的左側；左側放不下才貼繪圖區內側；y 夾在繪圖區內
       const bx = Math.max(p.x + 3, Math.min(px - 9 - bw, p.x + p.w - bw - 3));
-      const by = Math.max(p.y + 2, Math.min(py - bh / 2, p.y + p.h - bh - 2));
+      let by = Math.max(p.y + 2, Math.min(py - bh / 2, p.y + p.h - bh - 2));
+      for (let moved = true; moved;) {
+        moved = false;
+        for (const o of placed) {
+          if (by < o + bh + 2 && by + bh + 2 > o) { by = o + bh + 2 > p.y + p.h - bh - 2 ? o - bh - 2 : o + bh + 2; moved = true; }
+        }
+        if (placed.length > 4) break;
+      }
+      placed.push(by);
       ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 5);
       ctx.fillStyle = bg; ctx.fill();
       ctx.fillStyle = failed ? "#1a1400" : "#fff";
@@ -289,7 +298,7 @@
 
   // 同一張圖畫 A、B 兩條線（雙極脈衝電源的正向／負向電壓）；A 走原本的 add／setAll，B 走 addB／setAllB
   class DualSeriesChart extends SeriesChart {
-    clear() { this.pts2 = []; this.lo2 = Infinity; this.hi2 = -Infinity; super.clear(); }
+    clear() { this.pts2 = []; this.lo2 = Infinity; this.hi2 = -Infinity; this.pts3 = []; this.lo3 = Infinity; this.hi3 = -Infinity; super.clear(); }
     setAll(points) { this.pts = []; this.lo = Infinity; this.hi = -Infinity; this.add(points); }
     setAllB(points) { this.pts2 = []; this.lo2 = Infinity; this.hi2 = -Infinity; this.addB(points); }
     addB(points) {
@@ -302,9 +311,25 @@
       if (this.pts2.length > SERIES_KEEP) this.pts2 = downsampleSeries(this.pts2, SERIES_TARGET);
       this.requestDraw();
     }
-    bounds() { return [Math.min(this.lo, this.lo2), Math.max(this.hi, this.hi2)]; }
+    // 第三條線（選用，opts.color3）：電壓圖的「輸出電壓 U（電源控制值）」
+    setAllC(points) { this.pts3 = []; this.lo3 = Infinity; this.hi3 = -Infinity; this.addC(points); }
+    addC(points) {
+      const last = this.pts3.length ? this.pts3[this.pts3.length - 1][0] : -Infinity;
+      for (const q of points) {
+        if (q[0] < last) continue;
+        this.pts3.push(q);
+        if (q[1] !== null) { if (q[1] < this.lo3) this.lo3 = q[1]; if (q[1] > this.hi3) this.hi3 = q[1]; }
+      }
+      if (this.pts3.length > SERIES_KEEP) this.pts3 = downsampleSeries(this.pts3, SERIES_TARGET);
+      this.requestDraw();
+    }
+    bounds() {
+      return [Math.min(this.lo, this.lo2, this.opts.color3 ? this.lo3 : Infinity), Math.max(this.hi, this.hi2, this.opts.color3 ? this.hi3 : -Infinity)];
+    }
     layers() {
-      return [{ pts: this.pts, color: this.opts.color(), tag: "A " }, { pts: this.pts2, color: this.opts.color2(), tag: "B " }];
+      const l = [{ pts: this.pts, color: this.opts.color(), tag: "A " }, { pts: this.pts2, color: this.opts.color2(), tag: "B ", dash: [5, 3] }];
+      if (this.opts.color3) l.push({ pts: this.pts3, color: this.opts.color3(), tag: "U " });
+      return l;
     }
   }
 
@@ -713,16 +738,19 @@
   });
   const psuUChart = new DualSeriesChart($("cv-psu-u"), {
     labels: ["Time (s)", "電壓 U（V）A / B 平均"],
-    color: () => theme.wave, color2: () => theme.fft, unit: "V", minRange: 10, decimals: 1,
+    color: () => theme.wave, color2: () => theme.fft, color3: () => theme.out, unit: "V", minRange: 10, decimals: 1,
   });
   const psuUChartB = { add: (pts) => psuUChart.addB(pts), setAll: (pts) => psuUChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
+  // 綠線：電源面板顯示與調節用的整體輸出電壓 Uact（status.u_act，與設定值相符）。A／B 平均電壓是脈衝導通期間的平均，會比設定值高。
+  // 註：開機瞬間 Uact／Iact／Pact 可能卡在峰值數十秒（2026-11-02 #1 場 445 V 卡 29 秒），這是電源回報的行為，不另外處理。
+  const psuUChartOut = { add: (pts) => psuUChart.addC(pts), setAll: (pts) => psuUChart.setAllC(pts), clear() {} };
   const psuIChart = new DualSeriesChart($("cv-psu-i"), {
     labels: ["Time (s)", "電流 I（A）A / B 平均"],
     color: () => theme.wave, color2: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
   });
   const psuIChartB = { add: (pts) => psuIChart.addB(pts), setAll: (pts) => psuIChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
   // key 對應 /api/state 的 series；psu_* 不是感測器（沒有 sensors／enabled 項目），renderState 會略過
-  const seriesCharts = { temp: tempChart, distance: distChart, psu_u_a: psuUChart, psu_u_b: psuUChartB, psu_i_a: psuIChart, psu_i_b: psuIChartB };
+  const seriesCharts = { temp: tempChart, distance: distChart, psu_u_a: psuUChart, psu_u_b: psuUChartB, psu_u_out: psuUChartOut, psu_i_a: psuIChart, psu_i_b: psuIChartB };
   const optHeat = new SpectrumHeatmap($("cv-opt"));
   const optLive = new LiveSpectrum($("cv-opt-live"), optHeat);
   const charts = [specChart, tempChart, distChart, psuUChart, psuIChart, optHeat, optLive];
@@ -1463,8 +1491,8 @@
     const p = psu.params, sp = psu.snap.setpoints;
     return { mode: ({4: "mono_a", 8: "mono_b", 32: "bipulse"})[p[33]] || "未知",
       freq_hz: p[140] ? p[1100] : p[51130] * 1000, duty_pct: p[51131],
-      // 雙極：由 ch51131／ch650 反推（假設見 bipulseTiming，未在真機驗證）
-      pos_pct: p[51131] - p[650], neg_pct: 100 - p[51131] - p[650], ...sp };
+      // 雙極：由 ch51131／ch650 反推（公式見 bipulseTiming）；duty 只有 0.1 % 精度，反推值取到 0.1 以免讀回誤差造成「已修改」誤判
+      pos_pct: Math.round(p[51131] * (1 - p[650] / 100) * 10) / 10, neg_pct: Math.round((100 - p[51131]) * (1 - p[650] / 100) * 10) / 10, ...sp };
   }
 
   function recipeChanged(key, a, b) {
@@ -1473,18 +1501,21 @@
     return key === "freq_hz" ? Math.round(a * 10) !== Math.round(b * 10) : Math.abs(a - b) >= 1e-6;
   }
 
-  // 雙極：正向 a %、負向 b % → 占空比與關斷時間（週期的 %）。
-  // 必須與 sensors/truplasma_package/params.py 的 bipulse_timing 一致；Off 為週期 %、每週期兩段（手冊 p.26），尚未用示波器實測。
-  const OFF_TIME_MANUAL_MAX = 20; // 手冊 ch650 Off Time 範圍 0–20 %；面板實測可接受更大值，但波形尚未用示波器驗證
-  const offUnverifiedText = (off) => `停止時間 ${off} % 超出手冊範圍（0–20 %）：面板實測可接受，但實際波形尚未用示波器驗證`;
+  // 雙極：正向 a %、負向 b %（各佔整個週期）→ 占空比與 Off Time（ch650）。
+  // 必須與 sensors/truplasma_package/params.py 的 bipulse_timing 一致：s = a+b；off = 100 − s；duty = 100·a/s（0.1 % 精度）。
+  // 依據：2026-11-02 電解槽判定測試，Off 是「每個脈衝的 %」：TA = Duty·(1−Off)、TB = (1−Duty)·(1−Off)；只實測到 Off 45 %，未用示波器驗證。
+  const OFF_TIME_MANUAL_MAX = 20; // 手冊 ch650 Off Time 範圍 0–20 %
+  const OFF_TIME_TESTED_MAX = 45; // 2026-11-02 實測驗證到 45 %
+  const offBeyondManualText = "超出手冊範圍（0–20 %），已在 2026-11-02 實測到 45 %";
+  const offUnverifiedText = (off) => `停止時間 ${off} % 超過已實測的 45 %：尚未實測驗證`;
   function bipulseTiming(a, b) {
     if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: "請輸入正向／負向佔空比 %" };
     const total = a + b;
-    if (!Number.isInteger(total) || total % 2) return { error: `正向＋負向合計要是偶數（目前 ${total} %）：剩下的時間要平分成兩段關斷` };
-    const off = (100 - total) / 2, duty = a + off;
-    if (off < 1 || off > 49) return { error: `正向＋負向合計要在 2–98 % 之間的偶數（目前 ${total} %）：每段關斷最少 1 %、最多 49 %` };
+    if (!Number.isInteger(total)) return { error: `正向＋負向合計要是整數（目前 ${total} %）：Off Time 是整數 %` };
+    const off = 100 - total, duty = Math.round(1000 * a / total) / 10;
+    if (off < 1 || off > 98) return { error: `正向＋負向合計要在 2–99 %（目前 ${total} %）：Off Time 為 1–98 %` };
     if (duty < 1 || duty > 99) return { error: `換算後占空比 ${duty} % 超出 1–99` };
-    return { duty, off, unverified: off > OFF_TIME_MANUAL_MAX };
+    return { duty, off, beyondManual: off > OFF_TIME_MANUAL_MAX, unverified: off > OFF_TIME_TESTED_MAX };
   }
 
   // 頻率／導通欄位下方的提示（正式流程與手動面板共用）：低頻模式、雙極換算結果、Off Time（ch650）讀回。
@@ -1504,11 +1535,13 @@
     if (t.error) { line(t.error).dataset.level = "warn"; return; }
     const period = r.freq_hz > 0 ? 1000000 / r.freq_hz : null;
     const us = (pct) => (period ? `${(period * pct / 100).toFixed(1)} µs` : "--");
-    // 一個週期依序：正向 → 停 → 負向 → 停（手冊 p.26）。電源存的 Off Time 只有異常時才提示
-    line(`佔空比 = 該方向通電時間佔一個週期的比例。每個週期 ${us(100)}：正向通電 ${us(r.pos_pct)} → 停 ${us(t.off)} → 負向通電 ${us(r.neg_pct)} → 停 ${us(t.off)}`);
+    // 一個週期依序：正向通電 → 停 → 負向通電 → 停。Off 是每個脈衝的 %，兩段停止長度在 a≠b 時不同：
+    // 停1 = T·(duty−a)、停2 = T·((100−duty)−b)。電源存的 Off Time 只有異常時才提示
+    line(`佔空比 = 該方向通電時間佔一個週期的比例。每個週期 ${us(100)}：正向通電 ${us(r.pos_pct)} → 停 ${us(t.duty - r.pos_pct)} → 負向通電 ${us(r.neg_pct)} → 停 ${us(100 - t.duty - r.neg_pct)}`);
     if (t.unverified) line(offUnverifiedText(t.off)).dataset.level = "warn";
+    else if (t.beyondManual) line(offBeyondManualText);
     const read = channels && channels["650"] != null ? channels["650"] : psu.params[650];
-    if (read != null && (read < 1 || read > 49)) line(`電源目前存的停止時間 ${read} % 超出可用範圍 1–49 %，檢驗時會改寫`).dataset.level = "warn";
+    if (read != null && (read < 1 || read > 98)) line(`電源目前存的停止時間 ${read} % 超出可用範圍 1–98 %，檢驗時會改寫`).dataset.level = "warn";
   }
 
   function modeName(mode) {

@@ -69,7 +69,7 @@ from signal_package import AudioRecorder  # noqa: E402
 from temp_py_package import list_candidate_ports  # noqa: E402
 from temp_py_package.reader import check_port_present, find_temperature_port, read_tx600n_diag
 from truplasma_package import MEASUREMENTS, PARAMS, SimTruPlasma, TruPlasmaController, open_serial  # noqa: E402
-from truplasma_package.params import RECIPE_LIMITS, bipulse_timing, off_time_exceeds_manual, plan_recipe  # noqa: E402
+from truplasma_package.params import RECIPE_LIMITS, bipulse_timing, off_time_unverified, plan_recipe  # noqa: E402
 from truplasma_package.protocol import ALARM_TEXT, PULSE_MODES, TEST_VERSION_CODES  # noqa: E402
 
 DATA_DIR = os.path.join(BASE_DIR, "Sensor_Data")
@@ -166,6 +166,7 @@ EXP_BASELINE_S = 5.0             # 開始錄製後、送出電源開啟前的基
 SENSOR_CHECK_S = 3.0             # 「檢驗Sensor與電供」試收秒數
 SENSOR_CHECK_INIT_GRACE_S = 5.0  # 試收時間到時仍在初始化（例如測距儀 ABLE 約 2.7 秒）的感測器最多再等幾秒
 EXP_OUTPUT_ON_TIMEOUT_S = 25.0   # 送出開啟後多久沒進入「輸出中」就放棄（controller 自己另有繼電器 10 秒、輸出 5 秒逾時）
+PULSE_FORMULA = "pulse_pct_v2"   # 雙極 pos/neg ↔ ch51131/ch650 換算公式版本（見 params.bipulse_timing）；舊場次無此欄位＝舊公式
 EXP_OFF_TIMEOUT_S = 8.0          # 結束時等電源回報輸出與主繼電器都關閉的上限，逾時改送緊急關閉
 EXP_MAX_S = 24 * 3600            # 實驗時間上限
 # 「檢驗」時自動重設一次的鎖存警報白名單：61613 ActSourceFail 是電腦停止送心跳 4–5 秒後電源自鎖（斷線、伺服器重啟、
@@ -984,8 +985,8 @@ class MonitorService:
 
         # 溫度／距離時間序列（本次監測全程）：[(elapsed 秒, 值或 None), ...]；開始新監測時清空
         # psu_u_a / psu_u_b、psu_i_a / psu_i_b：A、B 兩路平均電壓與電流（雙極脈衝下 u_act / i_act_peak 會低估）。只在實驗錄製中且電源已連線時累積
-        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i_a": [], "psu_i_b": []}
-        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i_a": 0, "psu_i_b": 0}  # 已透過 SSE 送出的筆數
+        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_u_out": [], "psu_i_a": [], "psu_i_b": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_u_out": 0, "psu_i_a": 0, "psu_i_b": 0}  # 已透過 SSE 送出的筆數
 
         # 光譜儀（Optical Spectrum）：波長軸 meta、降採樣歷史（熱圖用）、最新一筆完整解析度（即時光譜用）
         self.opt_meta = None
@@ -1710,8 +1711,8 @@ class MonitorService:
         self.spec_cols = collections.deque(maxlen=self.audio_meta()["max_cols"])
         self.spec_total = 0
         self.spec_freqs = None
-        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_i_a": [], "psu_i_b": []}
-        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_i_a": 0, "psu_i_b": 0}
+        self.series = {"temp": [], "distance": [], "psu_u_a": [], "psu_u_b": [], "psu_u_out": [], "psu_i_a": [], "psu_i_b": []}
+        self.series_sent = {"temp": 0, "distance": 0, "psu_u_a": 0, "psu_u_b": 0, "psu_u_out": 0, "psu_i_a": 0, "psu_i_b": 0}
         self.opt_meta = None
         self.opt_cols = collections.deque(maxlen=self._opt_max_cols(p["spec_interval"], p["history_duration"]))
         self.opt_total = 0
@@ -1886,6 +1887,7 @@ class MonitorService:
             rec.write_row("truplasma", row)
         self.add_series_point("psu_u_a", meas.get("Uavg_A_V"))
         self.add_series_point("psu_u_b", meas.get("Uavg_B_V"))
+        self.add_series_point("psu_u_out", st["u_act"])  # 整體輸出電壓 Uact（綠線）；開機瞬間可能卡在峰值數十秒，不處理
         self.add_series_point("psu_i_a", meas.get("Iavg_A_A"))
         self.add_series_point("psu_i_b", meas.get("Iavg_B_A"))
 
@@ -2005,10 +2007,12 @@ class MonitorService:
                       "u": float(r["u"]), "i": float(r["i"]), "p": float(r.get("p", RECIPE_LIMITS["p_default"]))}
             if control is not None:
                 recipe["control"] = control
-            # Off Time（ch650）超出手冊 0–20 % 時標記「未驗證」：面板可接受，但實際波形尚未用示波器驗證
+            # Off Time（ch650）：手冊 0–20 %，2026-11-02 實測到 45 %；>45 才標「未驗證」。
+            # pulse_formula 標記換算公式版本：沒有此欄位的舊場次用舊公式（Off 為週期 %、off=(100−a−b)/2），其 pos/neg 是舊公式算的
             off = bipulse_timing(recipe["pos_pct"], recipe["neg_pct"])[1] if recipe["mode"] == "bipulse" else None
             recipe["off_pct"] = off
-            recipe["off_time_unverified"] = off_time_exceeds_manual(off)
+            recipe["off_time_unverified"] = off_time_unverified(off)
+            recipe["pulse_formula"] = PULSE_FORMULA
             if recipe["u"] <= 0 or recipe["i"] <= 0:
                 raise ValueError("電壓上限 U 與電流上限 I 都必須大於 0，否則電源不會輸出")
         except (ValueError, TypeError, KeyError) as e:
@@ -2050,7 +2054,8 @@ class MonitorService:
         return {"mode": recipe["mode"], "freq_hz": recipe["freq_hz"],
                 **({"control": recipe["control"]} if "control" in recipe else {}),
                 **({"pos_pct": recipe["pos_pct"], "neg_pct": recipe["neg_pct"],
-                    "off_pct": recipe.get("off_pct"), "off_time_unverified": recipe.get("off_time_unverified", False)}
+                    "off_pct": recipe.get("off_pct"), "off_time_unverified": recipe.get("off_time_unverified", False),
+                    "pulse_formula": recipe.get("pulse_formula", PULSE_FORMULA)}
                    if recipe["mode"] == "bipulse" else {"duty_pct": recipe["duty_pct"]}),
                 "setpoints": dict(sp), "read_at": iso_now(),
                 "channels": {str(ch): readback.get(ch) for ch in RECIPE_READBACK_CHANNELS},
@@ -2344,7 +2349,7 @@ class MonitorService:
             recorder.update(missing_sensors=missing)
         self._exp_update(exp)
         if recipe.get("off_time_unverified"):
-            slog(WARN, PSU_NAME, f"雙極停止時間 Off Time {recipe['off_pct']} % 超出手冊範圍 0–20 %：面板實測可接受，但實際波形尚未用示波器驗證")
+            slog(WARN, PSU_NAME, f"雙極停止時間 Off Time {recipe['off_pct']} % 超過已實測的 45 %：尚未實測驗證（手冊範圍 0–20 %）")
         slog(INFO, SRC_SYSTEM, f"正式實驗 {exp['id']} 開始：實驗時間 {duration:g} 秒，基線 {self.exp_baseline_s:g} 秒；"
              f"電源參數 {json.dumps(recipe, ensure_ascii=False)}"
              + (f"；缺少感測器 {'、'.join(m['name'] for m in missing)}（使用者確認仍要開始）" if missing else ""))

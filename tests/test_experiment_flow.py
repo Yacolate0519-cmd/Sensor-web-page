@@ -135,17 +135,27 @@ def recipe_body(**kw):
     return dict(body(), recipe=dict(r, **kw))
 
 
-def test_bipulse_off_over_manual_range_passes_and_is_flagged_unverified(svc):
-    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, pos_pct=20, neg_pct=20)))
+def test_bipulse_off_over_tested_range_flagged_unverified(svc):
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, pos_pct=20, neg_pct=20)))  # off 60 > 45
     assert code == 200, res
     assert res["psu_ok"] and res["can_start"]
-    assert res["recipe"]["off_pct"] == 30 and res["recipe"]["off_time_unverified"] is True
-    assert res["readback"]["channels"]["650"] == 30 and res["readback"]["off_time_unverified"] is True
+    assert res["recipe"]["off_pct"] == 60 and res["recipe"]["off_time_unverified"] is True
+    assert res["recipe"]["pulse_formula"] == "pulse_pct_v2"
+    assert res["readback"]["channels"]["650"] == 60 and res["readback"]["off_time_unverified"] is True
+    assert res["readback"]["pulse_formula"] == "pulse_pct_v2"
+
+
+def test_bipulse_off_between_manual_and_tested_not_flagged(svc):
+    res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, pos_pct=30, neg_pct=30)))  # off 40：超出手冊但已實測
+    assert code == 200, res
+    assert res["recipe"]["off_pct"] == 40 and res["recipe"]["off_time_unverified"] is False
+    assert res["recipe"]["pulse_formula"] == "pulse_pct_v2"
+    assert res["readback"]["channels"]["650"] == 40 and res["readback"]["off_time_unverified"] is False
 
 
 def test_bipulse_off_within_manual_range_not_flagged(svc):
-    res = check_ok(svc)  # 45/45 → off=5
-    assert res["recipe"]["off_pct"] == 5 and res["recipe"]["off_time_unverified"] is False
+    res = check_ok(svc)  # 45/45 → off=10
+    assert res["recipe"]["off_pct"] == 10 and res["recipe"]["off_time_unverified"] is False
     _, recipe, _ = svc._exp_parse(dict(body(), recipe={"mode": "mono_a", "freq_hz": 1000, "duty_pct": 50, "u": 100, "i": 2, "p": 1}))
     assert recipe["off_pct"] is None and recipe["off_time_unverified"] is False
 

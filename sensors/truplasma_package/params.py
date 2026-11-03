@@ -11,12 +11,19 @@ RECIPE_LIMITS = {"u": 1000.0, "i": 25.0, "p_default": 10.0, "p": 10.0}
 U_NOM, I_NOM, P_NOM = 1000.0, 25.0, 10.0  # V, A, kW (4010 rating, manual p.16)
 
 OFF_TIME_MANUAL_MAX = 20  # 手冊 ch650 Off Time 範圍 0–20 %
-OFF_TIME_MAX = 49         # 本程式接受的上限：a、b > 0 時 off = (100−a−b)/2 ≤ 49
+OFF_TIME_TESTED_MAX = 45  # 2026-11-02 電解槽實測驗證到 Off = 45 %（見 bipulse_timing）
+OFF_TIME_MAX = 98         # 本程式接受的上限：off = 100 − (a+b)，a+b ≥ 2
+DUTY_READBACK_TOL = 0.05  # ch51131 佔空比以 0.1 % 為步進；讀回比對容差（float32 誤差遠小於此）
 
 
 def off_time_exceeds_manual(off):
-    """Off Time（週期 %）是否超出手冊範圍（>20）：面板可接受，但波形尚未用示波器驗證。"""
+    """Off Time（%）是否超出手冊範圍（>20）：面板可接受，且在 ≤45 已實測。"""
     return off is not None and off > OFF_TIME_MANUAL_MAX
+
+
+def off_time_unverified(off):
+    """Off Time 是否超出已實測範圍（>45）：此範圍的實際波形尚未驗證。"""
+    return off is not None and off > OFF_TIME_TESTED_MAX
 
 
 @dataclass(frozen=True)
@@ -43,8 +50,8 @@ PARAMS = [
     Param(33, "byte", "脈衝模式", "pulse", fmt="mode",
           note="bit mask：0 DC-A、1 DC-B、2 MonoPulse-A、3 MonoPulse-B、4 Full、5 BiPulse、6 Trapez、7 Step。寫入方式未在實機驗證"),
     Param(51130, "float", "頻率設定值", "pulse", "kHz", 0.1, 100),
-    Param(51131, "float", "佔空比設定值", "pulse", "%", 1, 99),
-    Param(650, "byte", "Off Time", "pulse", "%", 1, OFF_TIME_MAX, note="手冊範圍 0–20；2026-11-02 面板實測接受 36；10/22 讀到 80（意義待確認）"),
+    Param(51131, "float", "佔空比設定值", "pulse", "%", 1, 99, note="雙極時為 100·a/(a+b)，0.1 % 步進"),
+    Param(650, "byte", "Off Time", "pulse", "%", 1, OFF_TIME_MAX, note="手冊範圍 0–20；2026-11-02 面板接受 >20 並實測到 45（Off 為每個脈衝的 %，非週期 %）；46–98 未驗證；10/22 讀到 80"),
     Param(140, "byte", "低頻模式", "pulse", fmt="bool"),
     Param(1100, "int", "低頻設定值", "pulse", "Hz", 1, 1000),
     Param(652, "byte", "上升時間 A", "pulse", "%", 0, 30),
@@ -139,16 +146,15 @@ def check_setpoints(u, i, p):
 
 
 def bipulse_timing(pos_pct, neg_pct):
-    """雙極脈衝：正向導通 a %、負向導通 b % → (占空比 ch51131, 關斷時間 ch650)，皆為週期的 %。
+    """雙極脈衝：正向導通 a %、負向導通 b %（各佔整個週期）→ (占空比 ch51131, 關斷時間 ch650)。
 
-    【假設，未在真機驗證】手冊 p.26：TA = Duty·T − Off、TB = (1−Duty)·T − Off，一個週期是
-    正向→關斷→負向→關斷。這裡假設 ch650 的單位是「週期的 %」，於是
-        off  = (100 − a − b) / 2     （必須是 1–49 的整數，ch650 是 byte）
-        duty = a + off               （必須在 1–99）
-    實機 ch650 曾讀到 80（超出手冊範圍），單位可能不是這個假設；上機驗證後只需改這個函式。
-    2026-11-02：手冊寫 Off Time 0–20 %，但面板接受並存入 36（讀回 ch650=36），所以 20 不是硬限制；
-    實驗室要做 20/20（off=30）。目前「假設公式在 off>20 時仍成立」，尚未用示波器驗證；
-    off>20 仍放行，由 off_time_exceeds_manual(off) 判斷並在網頁／實驗紀錄標「超出手冊範圍」。
+    換算：s = a + b；off = 100 − s；duty = 100·a / s（四捨五入到 0.1 %）。
+    依據：2026-11-02 在電解槽做判定測試（duty 50，Off = 1/15/30/45/1，CV 200 V），以 A 極
+    功率/(平均電壓×平均電流) 估通電比，實測 0.523/0.487/0.407/0.295/0.513，最吻合
+    「Off 是每個脈衝的 %」：TA = Duty·(1 − Off)、TB = (1 − Duty)·(1 − Off)（週期為 1）。
+    手冊 p.26 字面公式（Off 為週期 %、每週期兩段；Off 45 預測 0.05）已被排除。
+    只驗證到 Off ≤ 45（OFF_TIME_TESTED_MAX）；46–98 放行但標未驗證。以上皆未用示波器驗證。
+    a+b 須為整數（ch650 是 byte），2 ≤ s ≤ 99（即 1 ≤ off ≤ 98），不需偶數。
     """
     try:
         a, b = float(pos_pct), float(neg_pct)
@@ -159,15 +165,15 @@ def bipulse_timing(pos_pct, neg_pct):
     if a <= 0 or b <= 0:
         raise ValueError("正向／負向導通 % 必須大於 0")
     total = a + b
-    if total != int(total) or int(total) % 2:
-        raise ValueError(f"正向 + 負向導通 % 必須是偶數（目前 {total:g}），關斷時間才會是整數")
-    off = (100 - total) / 2
+    if total != int(total):
+        raise ValueError(f"正向 + 負向導通 % 合計必須是整數（目前 {total:g}），關斷時間才會是整數")
+    off = 100 - int(total)
     if not 1 <= off <= OFF_TIME_MAX:
-        raise ValueError(f"正向 + 負向導通 % 需在 2–98 之間的偶數（目前 {total:g}，關斷時間 {off:g} % 超出 1–{OFF_TIME_MAX}）")
-    duty = a + off
+        raise ValueError(f"正向 + 負向導通 % 合計需在 2–99 之間（目前 {total:g}，關斷時間 {off:g} % 超出 1–{OFF_TIME_MAX}）")
+    duty = round(100 * a / total, 1)
     if not 1 <= duty <= 99:
         raise ValueError(f"換算後佔空比 {duty:g} % 超出 1–99")
-    return duty, int(off)
+    return duty, off
 
 
 def plan_recipe(current, payload):
@@ -200,5 +206,6 @@ def plan_recipe(current, payload):
                (1100, round(freq)) if low else (51130, round(freq / 1000, 1)), (51131, duty)]
     if mode == "bipulse":
         desired.append((650, off))
+    tol = lambda ch: DUTY_READBACK_TOL if ch == 51131 else 1e-5
     return [(ch, value) for ch, value in desired
-            if current.get(ch, current.get(str(ch))) is None or abs(current.get(ch, current.get(str(ch))) - value) > 1e-5]
+            if current.get(ch, current.get(str(ch))) is None or abs(current.get(ch, current.get(str(ch))) - value) > tol(ch)]

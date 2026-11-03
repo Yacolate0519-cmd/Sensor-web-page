@@ -289,11 +289,11 @@ def test_check_readback_channels_and_actual(svc):
     rb = res["readback"]
     assert set(rb["channels"]) == {"33", "140", "1100", "51130", "51131", "650"}
     assert rb["channels"]["33"] == 32 and rb["channels"]["140"] == 0
-    assert rb["channels"]["51130"] == pytest.approx(5.0) and rb["channels"]["51131"] == pytest.approx(40)
+    assert rb["channels"]["51130"] == pytest.approx(5.0) and rb["channels"]["51131"] == pytest.approx(37.5)
     assert rb["channels"]["650"] is not None  # Off Time 只讀回顯示，不寫入
     assert wait_for(lambda: svc.psu.snapshot()["measurements"].get("Freq_Hz") == pytest.approx(5000), 3)
     res, code = svc.exp_check(dict(body(), recipe=dict(RECIPE, freq_hz=5000, pos_pct=30, neg_pct=50)))
-    assert res["readback"]["actual"] == {"freq_hz": pytest.approx(5000), "duty_pct": pytest.approx(40)}
+    assert res["readback"]["actual"] == {"freq_hz": pytest.approx(5000), "duty_pct": pytest.approx(37.5)}
     assert svc.psu_recipe_errors == []
 
 

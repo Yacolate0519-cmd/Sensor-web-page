@@ -11,15 +11,18 @@
     { kind: "psu", title: "電源 TruPlasma", charts: [
       { id: "u", title: "電壓 U", unit: "V", zero: true, series: [
         { key: "Uavg_A_V", label: "A 極平均", color: "--chart-wave" },
-        { key: "Uavg_B_V", label: "B 極平均", color: "--chart-fft" },
+        { key: "Uavg_B_V", label: "B 極平均", color: "--chart-fft", dashed: true },
+        // Uact_V：電源調節與面板顯示的整體輸出電壓，與設定值相符；A／B 平均是導通期間平均、會比設定值高。
+        // 註：開機瞬間 Uact／Iact／Pact 可能卡在峰值數十秒（2026-11-02 #1 場 445 V 卡 29 秒），不另外處理。
+        { key: "Uact_V", label: "輸出電壓 U（電源控制值）", color: "--chart-out" },
         { key: "Uset_V", label: "電壓上限設定 U", color: "--text-3", dashed: true, noBand: true }] },
       { id: "i", title: "電流 I", unit: "A", zero: true, series: [
         { key: "Iavg_A_A", label: "A 極平均", color: "--chart-wave" },
-        { key: "Iavg_B_A", label: "B 極平均", color: "--chart-fft" },
+        { key: "Iavg_B_A", label: "B 極平均", color: "--chart-fft", dashed: true },
         { key: "Iset_A", label: "電流上限設定 I（RMS）", color: "--text-3", dashed: true, noBand: true }] },
       { id: "p", title: "功率 P", unit: "kW", zero: true, series: [
         { key: "Pavg_A_kW", label: "A 極", color: "--chart-wave" },
-        { key: "Pavg_B_kW", label: "B 極", color: "--chart-fft" }] },
+        { key: "Pavg_B_kW", label: "B 極", color: "--chart-fft", dashed: true }] },
       { id: "arc", title: "電弧率", unit: "次/s", zero: true, series: [
         { key: "ArcRate_per_s", label: "電弧率", color: "--warn" }] },
     ] },
