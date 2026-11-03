@@ -280,12 +280,13 @@
       // 預設放點的左側；左側放不下才貼繪圖區內側；y 夾在繪圖區內
       const bx = Math.max(p.x + 3, Math.min(px - 9 - bw, p.x + p.w - bw - 3));
       let by = Math.max(p.y + 2, Math.min(py - bh / 2, p.y + p.h - bh - 2));
-      for (let moved = true; moved;) {
-        moved = false;
-        for (const o of placed) {
-          if (by < o + bh + 2 && by + bh + 2 > o) { by = o + bh + 2 > p.y + p.h - bh - 2 ? o - bh - 2 : o + bh + 2; moved = true; }
-        }
-        if (placed.length > 4) break;
+      const y0 = by, top = p.y + 2, bottom = p.y + p.h - bh - 2;
+      // 和已畫的標籤重疊時，從「緊貼某個標籤上方／下方」的候選位置挑離原位最近、且不重疊的一個；
+      // 候選數有限，不會像來回推擠那樣在三條線同值時無限振盪（7e936c2 的卡死 bug）
+      const free = (y) => y >= top && y <= bottom && placed.every((o) => y + bh + 2 <= o || y >= o + bh + 2);
+      if (!free(by)) {
+        const cand = placed.flatMap((o) => [o + bh + 2, o - bh - 2]).filter(free);
+        if (cand.length) by = cand.reduce((a, b) => (Math.abs(b - y0) < Math.abs(a - y0) ? b : a));
       }
       placed.push(by);
       ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 5);
