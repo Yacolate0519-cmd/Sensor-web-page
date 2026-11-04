@@ -328,8 +328,9 @@
       return [Math.min(this.lo, this.lo2, this.opts.color3 ? this.lo3 : Infinity), Math.max(this.hi, this.hi2, this.opts.color3 ? this.hi3 : -Infinity)];
     }
     layers() {
-      const l = [{ pts: this.pts, color: this.opts.color(), tag: "A " }, { pts: this.pts2, color: this.opts.color2(), tag: "B ", dash: [5, 3] }];
-      if (this.opts.color3) l.push({ pts: this.pts3, color: this.opts.color3(), tag: "U " });
+      const [t1, t2, t3] = this.opts.tags || ["A ", "B ", ""]; // 最新值標籤前綴（opts.tags 可覆寫）
+      const l = [{ pts: this.pts, color: this.opts.color(), tag: t1 }, { pts: this.pts2, color: this.opts.color2(), tag: t2, dash: [5, 3] }];
+      if (this.opts.color3) l.push({ pts: this.pts3, color: this.opts.color3(), tag: t3 });
       return l;
     }
   }
@@ -738,7 +739,7 @@
     color: () => theme.wave, unit: "µm", minRange: 500, decimals: 1,
   });
   const psuUChart = new DualSeriesChart($("cv-psu-u"), {
-    labels: ["Time (s)", "電壓 U（V）A / B 平均"],
+    labels: ["Time (s)", "電壓（V）A / B 平均"], tags: ["A ", "B ", "輸出 "],
     color: () => theme.wave, color2: () => theme.fft, color3: () => theme.out, unit: "V", minRange: 10, decimals: 1,
   });
   const psuUChartB = { add: (pts) => psuUChart.addB(pts), setAll: (pts) => psuUChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
@@ -746,7 +747,7 @@
   // 註：開機瞬間 Uact／Iact／Pact 可能卡在峰值數十秒（2026-11-02 #1 場 445 V 卡 29 秒），這是電源回報的行為，不另外處理。
   const psuUChartOut = { add: (pts) => psuUChart.addC(pts), setAll: (pts) => psuUChart.setAllC(pts), clear() {} };
   const psuIChart = new DualSeriesChart($("cv-psu-i"), {
-    labels: ["Time (s)", "電流 I（A）A / B 平均"],
+    labels: ["Time (s)", "電流（A）正向 / 負向平均"], tags: ["正 ", "負 "],
     color: () => theme.wave, color2: () => theme.fft, unit: "A", minRange: 0.5, decimals: 2,
   });
   const psuIChartB = { add: (pts) => psuIChart.addB(pts), setAll: (pts) => psuIChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
