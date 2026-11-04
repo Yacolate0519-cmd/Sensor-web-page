@@ -994,28 +994,6 @@
   const fmtSpan = (sec) => (sec = Math.round(sec)) >= 3600 ? `${Math.floor(sec / 3600)} 時 ${Math.floor(sec % 3600 / 60)} 分 ${sec % 60} 秒`
     : sec >= 60 ? `${Math.floor(sec / 60)} 分 ${sec % 60} 秒` : `${sec} 秒`;
 
-  function renderTime(elapsedInt, elapsed, duration, phase) {
-    $("time-num").textContent = fmtClock(elapsedInt);
-    $("time-unit").textContent = elapsedInt >= 3600 ? "時:分:秒" : "分:秒";
-    const bar = $("time-bar"), prog = bar.parentElement;
-    const d = duration;
-    if (phase === "idle" || phase === "checking") {
-      prog.classList.remove("indeterminate"); bar.style.width = "0";
-      $("time-sub").textContent = phase === "checking" ? "檢驗Sensor與電供 試收中（不存檔）" : "尚未開始錄製";
-      return;
-    }
-    if (d > 0) {
-      prog.classList.remove("indeterminate");
-      bar.style.width = `${Math.min(100, elapsed / d * 100)}%`;
-      const rem = Math.max(0, Math.ceil(d - elapsed));
-      $("time-sub").textContent = phase === "running" ? `剩餘 ${fmtSpan(rem)} · 共 ${fmtSpan(d)}` : `共 ${fmtSpan(d)}`;
-    } else {
-      prog.classList.toggle("indeterminate", phase === "running");
-      bar.style.width = phase === "running" ? "100%" : "0";
-      $("time-sub").textContent = state && state.mode === "experiment" ? "正式實驗：依實驗時間自動結束" : "無限（手動停止）";
-    }
-  }
-
   function renderState(s) {
     const prevRun = state ? state.run_id : null;
     state = s;
@@ -1030,9 +1008,6 @@
       const t = s.sensors[k].text;
       if (c.statusText !== t) { c.statusText = t; c.requestDraw(); }
     });
-
-    renderTime(s.elapsed_int, s.elapsed, s.duration, s.phase);
-    setDot($("card-time"), running ? "ok" : stopping ? "busy" : "idle");
 
     $("status-text").textContent = s.status_text;
     setDot($("card-status"), running ? "ok" : stopping ? "busy" : "idle");
@@ -1948,7 +1923,7 @@
       if (!state || state.phase !== "running") return;
       const t = JSON.parse(e.data);
       state.elapsed = t.elapsed; state.elapsed_int = t.elapsed_int;
-      renderTime(t.elapsed_int, t.elapsed, t.duration, state.phase);
+      renderRunPanel();
     });
     es.addEventListener("audio", (e) => {
       const msg = JSON.parse(e.data);

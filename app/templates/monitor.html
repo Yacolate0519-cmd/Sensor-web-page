@@ -35,12 +35,6 @@
         <div class="exp-bar-sub" id="exp-bar-sub"></div>
       </section>
       <section class="stats" aria-label="狀態顯示">
-        <article class="stat" id="card-time">
-          <header><span class="dot" data-level="idle"></span><h3>執行時間</h3></header>
-          <div class="stat-value"><span class="num" id="time-num">00:00</span><span class="unit" id="time-unit">分:秒</span></div>
-          <div class="progress" aria-hidden="true"><div class="progress-bar" id="time-bar"></div></div>
-          <p class="stat-sub" id="time-sub">設定 60 秒</p>
-        </article>
         <article class="stat stat-status" id="card-status">
           <header><span class="dot" data-level="idle"></span><h3>狀態</h3></header>
           <div class="status-text" id="status-text">待機中</div>
@@ -116,16 +110,7 @@
       </section>
 
       <section class="charts" aria-label="圖表">
-        <figure class="chart chart-spec">
-          <figcaption><h3>Spectrogram（聲音頻譜圖） <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
-          <div class="canvas-wrap canvas-spec"><canvas id="cv-spec"></canvas></div>
-        </figure>
         <!-- 光譜儀：上為光譜熱圖（時間 × 波長），下為最新一筆的即時光譜；放在 Spectrogram 之後，兩者同為「時間-頻率/波長」熱圖 -->
-        <figure class="chart chart-spec">
-          <figcaption><h3>Optical Spectrum（光譜） <span class="sim-tag" data-sim="spectrometer" hidden>模擬</span></h3><span class="chart-note" id="opt-note">AvaSpec-ULS2048L</span></figcaption>
-          <div class="canvas-wrap canvas-opt"><canvas id="cv-opt"></canvas></div>
-          <div class="canvas-wrap canvas-opt-live"><canvas id="cv-opt-live"></canvas></div>
-        </figure>
         <figure class="chart">
           <figcaption><h3>Temperature（溫度） <span class="sim-tag" data-sim="temp" hidden>模擬</span></h3><span class="chart-note" id="temp-note">--</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-temp"></canvas></div>
@@ -141,6 +126,15 @@
         <figure class="chart chart-psu">
           <figcaption><h3>PSU Current A / B（電流 I（A），正向 A／負向 B 平均）<span class="chart-legend"><i style="border-color:var(--chart-wave)"></i>A 極平均 <i style="border-color:var(--chart-fft);border-top-style:dashed"></i>B 極平均（虛線）</span> <span class="sim-tag" data-sim="psu" hidden>模擬</span></h3><span class="chart-note">實驗錄製中才記錄</span></figcaption>
           <div class="canvas-wrap"><canvas id="cv-psu-i"></canvas></div>
+        </figure>
+        <figure class="chart chart-spec">
+          <figcaption><h3>Spectrogram（聲音頻譜圖） <span class="sim-tag" data-sim="audio" hidden>模擬音訊</span></h3><span class="chart-note" id="spec-note">NFFT 256 · overlap 128</span></figcaption>
+          <div class="canvas-wrap canvas-spec"><canvas id="cv-spec"></canvas></div>
+        </figure>
+        <figure class="chart chart-spec">
+          <figcaption><h3>Optical Spectrum（光譜） <span class="sim-tag" data-sim="spectrometer" hidden>模擬</span></h3><span class="chart-note" id="opt-note">AvaSpec-ULS2048L</span></figcaption>
+          <div class="canvas-wrap canvas-opt"><canvas id="cv-opt"></canvas></div>
+          <div class="canvas-wrap canvas-opt-live"><canvas id="cv-opt-live"></canvas></div>
         </figure>
       </section>
     </main>
