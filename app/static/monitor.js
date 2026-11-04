@@ -739,7 +739,7 @@
     color: () => theme.wave, unit: "µm", minRange: 500, decimals: 1,
   });
   const psuUChart = new DualSeriesChart($("cv-psu-u"), {
-    labels: ["Time (s)", "電壓（V）A / B 平均"], tags: ["A ", "B ", "輸出 "],
+    labels: ["Time (s)", "電壓（V）正向 / 負向平均"], tags: ["正 ", "負 ", "輸出 "],
     color: () => theme.wave, color2: () => theme.fft, color3: () => theme.out, unit: "V", minRange: 10, decimals: 1,
   });
   const psuUChartB = { add: (pts) => psuUChart.addB(pts), setAll: (pts) => psuUChart.setAllB(pts), clear() {} }; // 清圖由 A 那條負責
@@ -1278,7 +1278,7 @@
     const v = (x, unit) => (x === null || x === undefined || x === "" ? "—" : `${x}${unit ? ` ${unit}` : ""}`);
     const psuRows = [["模式", MODE_NAMES[r.mode] || v(r.mode)], ["頻率 f", v(r.freq_hz, "Hz")],
       ...(r.mode === "bipulse" ? [["正向佔空比", v(r.pos_pct, "%")], ["負向佔空比", v(r.neg_pct, "%")]] : [["佔空比", v(r.duty_pct, "%")]]),
-      ...(r.control === "cv" ? [["控制方式", `定電壓 U ${v(r.u, "V")}`]] : r.control === "cc" ? [["控制方式", `定電流 I ${v(r.i, "A")}`]]
+      ...(r.control === "cv" ? [["控制方式", `定電壓 ${v(r.u, "V")}`]] : r.control === "cc" ? [["控制方式", `定電流 ${v(r.i, "A")}`]]
         : [["電壓 U", v(r.u, "V")], ["電流 I", v(r.i, "A")]]),
       ["功率上限 P", v(r.p, "kW")]];
     const circle = p.label_specimen_shape === "circle";
