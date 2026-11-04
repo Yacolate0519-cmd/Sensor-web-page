@@ -17,7 +17,9 @@
     <div class="topbar-meta">
       <span class="chip chip-sim" id="sim-chip" hidden title="這些感測器的數值是模擬產生的，不是真實量測">模擬模式</span>
       <a class="chip" href="/history" style="text-decoration:none" title="瀏覽過去的實驗並把數據畫成圖">實驗紀錄</a>
-      <button type="button" class="chip chip-btn" id="btn-manual" title="直接操作電源面板（不會錄製資料）">電供設定手動模式</button>
+      <!-- 重開實驗參數視窗；正式實驗中隱藏（參數已鎖定，改看右側「本次參數」） -->
+      <button type="button" class="chip chip-btn" id="btn-flow" title="填寫實驗標籤與電源參數、檢驗後開始實驗">實驗參數</button>
+      <button type="button" class="chip chip-btn" id="btn-settings" aria-controls="settings-drawer" title="電源 COM 埠、感測器裝置與參數、Sensor 測試模式、電供設定手動模式">⚙ 設定</button>
       <span class="chip" id="conn-chip" title="與伺服器的即時連線"><span class="dot" data-level="idle"></span><span id="conn-text">連線中</span></span>
       <!-- 緊急停止：電源連線後固定在右上角；正式實驗中按下後感測器繼續錄，由使用者按「停止錄製」結束 -->
       <button type="button" class="btn-estop btn-estop-top" id="btn-estop" hidden>緊急停止</button>
@@ -25,189 +27,7 @@
   </header>
 
   <div class="layout">
-    <!-- 左側：設定與控制 -->
-    <aside class="sidebar" aria-label="設定">
-      <!-- 正式實驗流程（docs/plans/experiment-ux-flow.md）：① 標籤 → ② 電源參數 → 檢驗Sensor與電供 → 開始實驗。上一步沒完成，下一步不能按 -->
-      <div id="flow" autocomplete="off">
-        <section class="group step" id="step-labels">
-          <h2><span class="step-no">1</span>實驗標籤</h2>
-          <label class="field">
-            <span class="field-label">金屬種類 <b class="req">*</b></span>
-            <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
-          </label>
-          <fieldset class="field specimen">
-            <legend class="field-label">試片 <b class="req">*</b></legend>
-            <div class="seg" role="radiogroup" aria-label="試片形狀">
-              <label><input type="radio" name="label_specimen_shape" value="square" checked><span>正方形</span></label>
-              <label><input type="radio" name="label_specimen_shape" value="circle"><span>圓形</span></label>
-            </div>
-            <div class="dims" data-shape="square">
-              <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（cm）"></div>
-              <span class="dims-x">×</span>
-              <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（cm）"></div>
-              <span class="dims-x">×</span>
-              <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（cm）"><span>cm</span></div>
-            </div>
-            <div class="dims" data-shape="circle" hidden>
-              <div class="input-unit"><input id="label_specimen_area" inputmode="decimal" placeholder="面積" aria-label="面積（cm²）"><span>cm²</span></div>
-              <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（cm）"><span>cm</span></div>
-            </div>
-            <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 cm</span>
-          </fieldset>
-          <label class="field">
-            <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
-            <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
-          </label>
-          <label class="field">
-            <span class="field-label">添加物（選填）</span>
-            <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
-          </label>
-        </section>
-
-        <fieldset class="group step" id="step-psu">
-          <h2><span class="step-no">2</span>電源參數</h2>
-          <p class="field-hint" id="step-psu-hint">先填完實驗標籤</p>
-          <div class="field"><span class="field-label">模式</span>
-            <div class="seg"><label><input type="radio" name="exp-kind" value="mono"><span>單極</span></label><label><input type="radio" name="exp-kind" value="bi" checked><span>雙極</span></label></div>
-          </div>
-          <div class="field" id="exp-pole-box" hidden><span class="field-label">輸出</span>
-            <div class="seg"><label><input type="radio" name="exp-pole" value="a" checked><span>A</span></label><label><input type="radio" name="exp-pole" value="b"><span>B</span></label></div>
-          </div>
-          <div class="grid-2">
-            <label class="field span-2"><span class="field-label">頻率 f（Hz）</span><div class="input-unit"><input id="exp-freq" inputmode="decimal" value="1000"></div><small class="field-hint" id="exp-freq-hint" hidden></small></label>
-            <label class="field span-2" id="exp-duty-field" hidden><span class="field-label">佔空比（%）</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"></div></label>
-            <label class="field" id="exp-pos-field"><span class="field-label">正向佔空比（%）</span><div class="input-unit"><input id="exp-pos" inputmode="decimal" value="45"></div></label>
-            <label class="field" id="exp-neg-field"><span class="field-label">負向佔空比（%）</span><div class="input-unit"><input id="exp-neg" inputmode="decimal" value="45"></div></label>
-            <small class="field-hint span-2" id="exp-duty-hint" hidden></small>
-            <div class="field span-2"><span class="field-label">控制方式</span>
-              <div class="seg"><label><input type="radio" name="exp-control" value="cv" checked><span>定電壓</span></label><label><input type="radio" name="exp-control" value="cc"><span>定電流</span></label></div>
-            </div>
-            <label class="field" id="exp-u-field"><span class="field-label">電壓設定 U（V）<b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"></div></label>
-            <label class="field" id="exp-i-field" hidden><span class="field-label">電流設定 I（A）<b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"></div></label>
-            <label class="field"><span class="field-label">功率上限 P（kW）</span><div class="input-unit"><input id="exp-p" inputmode="decimal" value="10"></div></label>
-            <small class="field-hint span-2" id="exp-control-hint"></small>
-            <label class="field"><span class="field-label">實驗時間 <b class="req">*</b></span><div class="exp-time-row" role="group" aria-label="實驗時間（分、秒）">
-              <div class="input-unit"><input id="exp-time-m" type="number" min="0" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（分）"><span>分</span></div>
-              <div class="input-unit"><input id="exp-time-s" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（秒）"><span>秒</span></div>
-            </div></label>
-            <details class="field span-2 exp-conn" id="exp-conn">
-              <summary class="field-label">連線設定（電源 COM 埠）</summary>
-              <label class="field"><span class="field-label">電源 COM 埠</span><input id="exp-port" value="COM8" placeholder="COM8" spellcheck="false"></label>
-            </details>
-          </div>
-          <p class="labels-error" id="exp-error" role="alert" hidden></p>
-          <span class="field-hint">按「檢驗Sensor與電供」就會把以上參數<b>寫入電源</b>（EEPROM）並讀回比對；開始前再確認一次。檢驗結果 5 分鐘內有效；實驗中鎖定，不能修改</span>
-        </fieldset>
-      </div>
-
-      <form id="settings" autocomplete="off" novalidate>
-
-        <details class="group group-fold" id="dev-fold">
-          <summary><h2>裝置</h2></summary>
-          <label class="field">
-            <span class="field-label">溫度感測器 COM 端口</span>
-            <div class="field-row">
-              <input id="com_port" name="com_port" list="com-list" placeholder="例：COM3 或 /dev/cu.usbserial" spellcheck="false">
-              <button type="button" class="btn-icon" id="refresh-com" title="重新整理 COM" aria-label="重新整理 COM">
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
-            </div>
-            <datalist id="com-list"></datalist>
-            <span class="field-hint" id="com-hint">可從清單選擇或直接輸入</span>
-          </label>
-          <label class="field">
-            <span class="field-label">音訊設備</span>
-            <div class="field-row">
-              <select id="audio_device" name="audio_device"></select>
-              <button type="button" class="btn-icon" id="refresh-audio" title="重新整理音訊" aria-label="重新整理音訊">
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
-            </div>
-          </label>
-        </details>
-
-        <details class="group group-fold">
-          <summary><h2>音訊參數</h2></summary>
-          <div class="grid-2">
-            <label class="field">
-              <span class="field-label">採樣率</span>
-              <div class="input-unit"><input id="sample_rate" name="sample_rate" inputmode="numeric" value="22050"><span>Hz</span></div>
-            </label>
-            <label class="field">
-              <span class="field-label">更新間隔</span>
-              <div class="input-unit"><input id="update_interval" name="update_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
-            </label>
-            <label class="field span-2">
-              <span class="field-label">頻譜圖顯示長度</span>
-              <div class="input-unit"><input id="history_duration" name="history_duration" inputmode="decimal" value="100"><span>秒</span></div>
-              <span class="field-hint">只影響畫面，不影響存檔；存檔一律保存全程</span>
-            </label>
-          </div>
-        </details>
-
-        <details class="group group-fold">
-          <summary><h2>測距儀</h2></summary>
-          <div class="field">
-            <div class="field-label-row">
-              <label class="field-label" for="refl_mode">反射模式</label>
-              <button type="button" class="help-btn" aria-label="反射模式說明" aria-describedby="refl-tip">
-                <!-- 自繪 questionmark.circle（不依賴 SF Symbols 字型） -->
-                <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.95 1.95 0 1 1 2.9 1.7c-.7.4-1 .8-1 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="11.5" r=".85" fill="currentColor"/></svg>
-              </button>
-              <div class="help-tip" id="refl-tip" role="tooltip">
-                <p><b>0-漫反射</b>：霧面、粗糙表面，如塗層、陶瓷、未拋光金屬、紙、樹脂；感測頭垂直對準待測面。</p>
-                <p><b>1-鏡面反射</b>：鏡面、玻璃、拋光金屬；感測頭需傾斜安裝，讓反射光回到受光部（角度依 KEYENCE 說明書）。</p>
-                <p>讀值不穩或讀不到時，先確認模式是否符合表面。</p>
-              </div>
-            </div>
-            <select id="refl_mode" name="refl_mode">
-              <option value="0">0-漫反射</option>
-              <option value="1">1-鏡面反射</option>
-            </select>
-          </div>
-          <label class="field">
-            <span class="field-label">測距間隔</span>
-            <div class="input-unit"><input id="distance_interval" name="distance_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
-            <span class="field-hint">程式讀取測距儀的頻率，0.1 秒＝每秒 10 筆，決定存檔資料密度</span>
-          </label>
-        </details>
-
-        <details class="group group-fold">
-          <summary><h2>光譜儀</h2></summary>
-          <div class="grid-2">
-            <div class="field">
-              <div class="field-label-row">
-                <label class="field-label" for="spec_interval">量測間隔</label>
-                <button type="button" class="help-btn" aria-label="光譜儀參數說明" aria-describedby="spec-tip">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.95 1.95 0 1 1 2.9 1.7c-.7.4-1 .8-1 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="11.5" r=".85" fill="currentColor"/></svg>
-                </button>
-                <div class="help-tip" id="spec-tip" role="tooltip">
-                  <p><b>量測間隔</b>：每隔多久量一筆光譜。</p>
-                  <p><b>積分時間</b>：越長訊號越強，但峰值超過 65535 counts 會飽和。</p>
-                </div>
-              </div>
-              <div class="input-unit"><input id="spec_interval" name="spec_interval" inputmode="decimal" value="0.5"><span>秒</span></div>
-            </div>
-            <label class="field">
-              <span class="field-label">積分時間</span>
-              <div class="input-unit"><input id="spec_integration_ms" name="spec_integration_ms" inputmode="decimal" value="50"><span>ms</span></div>
-            </label>
-          </div>
-        </details>
-      </form>
-
-      <div class="controls" id="flow-controls">
-        <button type="button" class="btn btn-ghost" id="btn-check" disabled title="試收四個感測器 3 秒，並把電源參數寫入電源、讀回比對">檢驗Sensor與電供</button>
-        <button type="button" class="btn btn-start" id="btn-exp-start" disabled>開始實驗</button>
-        <button type="button" class="btn btn-stop span-2" id="btn-stop" disabled>結束實驗</button>
-      </div>
-      <div class="check-result" id="check-result" hidden></div>
-      <div class="controls controls-test">
-        <button type="button" class="btn btn-sm btn-ghost span-2" id="btn-sensor-test" title="只錄感測器、完全不碰電源，用來排查 sensor 系統錯誤">Sensor 測試模式（不控制電源）</button>
-      </div>
-    </aside>
-
-    <!-- 右側：數值與圖表 -->
+    <!-- 數值與圖表（滿版） -->
     <main class="content">
       <!-- 實驗狀態列：正式實驗（階段、計時、電壓電流）或 Sensor 測試模式標示 -->
       <section class="exp-bar" id="exp-bar" role="status" hidden>
@@ -324,18 +144,227 @@
         </figure>
       </section>
     </main>
+
+    <!-- 實驗中右側「本次參數」：數值取自伺服器（experiment.recipe 與 params 的標籤），重新整理頁面後照樣正確；可收合（monitor.js renderRunPanel） -->
+    <aside class="run-panel" id="run-panel" aria-label="本次參數" hidden>
+      <button type="button" class="run-panel-tab" id="run-panel-toggle" aria-expanded="true" aria-controls="run-panel-body" title="收合／展開本次參數">
+        <span class="run-panel-tab-label">本次參數</span><span class="run-panel-tab-time" id="rp-tab-time">00:00</span>
+      </button>
+      <div class="run-panel-body" id="run-panel-body">
+        <header class="rp-head"><h2>本次參數</h2><span class="sr-badge" id="rp-stage" data-tone="neutral">—</span></header>
+        <section class="rp-time">
+          <div class="rp-clock" id="rp-elapsed">00:00</div>
+          <div class="progress" aria-hidden="true"><div class="progress-bar" id="rp-bar"></div></div>
+          <div class="rp-time-sub"><span>總長 <b id="rp-total">—</b></span><span>剩餘 <b id="rp-remain">—</b></span></div>
+          <p class="field-hint" id="rp-note" hidden></p>
+        </section>
+        <section class="rp-sec" id="rp-psu"><h3>電源參數</h3><dl class="rp-list" id="rp-psu-list"></dl></section>
+        <section class="rp-sec" id="rp-labels"><h3>實驗標籤</h3><dl class="rp-list" id="rp-labels-list"></dl></section>
+        <button type="button" class="btn btn-stop" id="btn-stop" disabled>結束實驗</button>
+      </div>
+    </aside>
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
-  <!-- 設定視窗：hover/點擊側欄 ①② 時，#flow、檢驗/開始按鈕、檢驗結果整個搬進來（monitor.js flowModal） -->
+  <!-- 實驗參數視窗：沒有進行中的實驗時開頁自動彈出；頂列「實驗參數」可重開（monitor.js flowModal）。
+       正式實驗流程（docs/plans/experiment-ux-flow.md）：① 標籤 → ② 電源參數 → 檢驗Sensor與電供 → 開始實驗。上一步沒完成，下一步不能按 -->
   <div class="flow-modal" id="flow-modal" hidden>
-    <div class="flow-modal-card" role="dialog" aria-modal="true" aria-label="實驗設定">
+    <div class="flow-modal-card" role="dialog" aria-modal="true" aria-label="實驗參數">
       <button type="button" class="flow-modal-close" id="flow-modal-close" aria-label="關閉">&#10005;</button>
-      <div class="flow-modal-body" id="flow-modal-body"></div>
-      <div class="flow-modal-foot" id="flow-modal-foot"></div>
+      <div class="flow-modal-body" id="flow-modal-body">
+        <div id="flow" autocomplete="off">
+          <section class="group step" id="step-labels">
+            <h2><span class="step-no">1</span>實驗標籤</h2>
+            <label class="field">
+              <span class="field-label">金屬種類 <b class="req">*</b></span>
+              <input id="label_metal" name="label_metal" placeholder="例：AZ31 鎂合金" spellcheck="false">
+            </label>
+            <fieldset class="field specimen">
+              <legend class="field-label">試片 <b class="req">*</b></legend>
+              <div class="seg" role="radiogroup" aria-label="試片形狀">
+                <label><input type="radio" name="label_specimen_shape" value="square" checked><span>正方形</span></label>
+                <label><input type="radio" name="label_specimen_shape" value="circle"><span>圓形</span></label>
+              </div>
+              <div class="dims" data-shape="square">
+                <div class="input-unit"><input id="label_specimen_length" inputmode="decimal" placeholder="長" aria-label="長（cm）"></div>
+                <span class="dims-x">×</span>
+                <div class="input-unit"><input id="label_specimen_width" inputmode="decimal" placeholder="寬" aria-label="寬（cm）"></div>
+                <span class="dims-x">×</span>
+                <div class="input-unit"><input id="label_specimen_thickness" inputmode="decimal" placeholder="厚" aria-label="厚（cm）"><span>cm</span></div>
+              </div>
+              <div class="dims" data-shape="circle" hidden>
+                <div class="input-unit"><input id="label_specimen_area" inputmode="decimal" placeholder="面積" aria-label="面積（cm²）"><span>cm²</span></div>
+                <div class="input-unit"><input id="label_specimen_thickness_c" inputmode="decimal" placeholder="厚度" aria-label="厚度（cm）"><span>cm</span></div>
+              </div>
+              <span class="field-hint" id="specimen-hint">長 × 寬 × 厚，單位 cm</span>
+            </fieldset>
+            <label class="field">
+              <span class="field-label">電解液配方與濃度 <b class="req">*</b></span>
+              <input id="label_electrolyte" name="label_electrolyte" placeholder="例：Na2SiO3 10 g/L + KOH 2 g/L" spellcheck="false">
+            </label>
+            <label class="field">
+              <span class="field-label">添加物（選填）</span>
+              <input id="label_additive" name="label_additive" placeholder="例：TiO2 奈米粒子 5 g/L" spellcheck="false">
+            </label>
+          </section>
+
+          <fieldset class="group step" id="step-psu">
+            <h2><span class="step-no">2</span>電源參數</h2>
+            <p class="field-hint" id="step-psu-hint">先填完實驗標籤</p>
+            <div class="field"><span class="field-label">模式</span>
+              <div class="seg"><label><input type="radio" name="exp-kind" value="mono"><span>單極</span></label><label><input type="radio" name="exp-kind" value="bi" checked><span>雙極</span></label></div>
+            </div>
+            <div class="field" id="exp-pole-box" hidden><span class="field-label">輸出</span>
+              <div class="seg"><label><input type="radio" name="exp-pole" value="a" checked><span>A</span></label><label><input type="radio" name="exp-pole" value="b"><span>B</span></label></div>
+            </div>
+            <div class="grid-2">
+              <label class="field span-2"><span class="field-label">頻率 f（Hz）</span><div class="input-unit"><input id="exp-freq" inputmode="decimal" value="1000"></div><small class="field-hint" id="exp-freq-hint" hidden></small></label>
+              <label class="field span-2" id="exp-duty-field" hidden><span class="field-label">佔空比（%）</span><div class="input-unit"><input id="exp-duty" inputmode="decimal" value="50"></div></label>
+              <label class="field" id="exp-pos-field"><span class="field-label">正向佔空比（%）</span><div class="input-unit"><input id="exp-pos" inputmode="decimal" value="45"></div></label>
+              <label class="field" id="exp-neg-field"><span class="field-label">負向佔空比（%）</span><div class="input-unit"><input id="exp-neg" inputmode="decimal" value="45"></div></label>
+              <small class="field-hint span-2" id="exp-duty-hint" hidden></small>
+              <div class="field span-2"><span class="field-label">控制方式</span>
+                <div class="seg"><label><input type="radio" name="exp-control" value="cv" checked><span>定電壓</span></label><label><input type="radio" name="exp-control" value="cc"><span>定電流</span></label></div>
+              </div>
+              <label class="field" id="exp-u-field"><span class="field-label">電壓設定 U（V）<b class="req">*</b></span><div class="input-unit"><input id="exp-u" inputmode="decimal"></div></label>
+              <label class="field" id="exp-i-field" hidden><span class="field-label">電流設定 I（A）<b class="req">*</b></span><div class="input-unit"><input id="exp-i" inputmode="decimal"></div></label>
+              <label class="field"><span class="field-label">功率上限 P（kW）</span><div class="input-unit"><input id="exp-p" inputmode="decimal" value="10"></div></label>
+              <small class="field-hint span-2" id="exp-control-hint"></small>
+              <label class="field"><span class="field-label">實驗時間 <b class="req">*</b></span><div class="exp-time-row" role="group" aria-label="實驗時間（分、秒）">
+                <div class="input-unit"><input id="exp-time-m" type="number" min="0" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（分）"><span>分</span></div>
+                <div class="input-unit"><input id="exp-time-s" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="0" aria-label="實驗時間（秒）"><span>秒</span></div>
+              </div></label>
+            </div>
+            <p class="labels-error" id="exp-error" role="alert" hidden></p>
+            <span class="field-hint">按「檢驗Sensor與電供」就會把以上參數<b>寫入電源</b>（EEPROM）並讀回比對；開始前再確認一次。檢驗結果 5 分鐘內有效；實驗中鎖定，不能修改</span>
+          </fieldset>
+        </div>
+        <div class="check-result" id="check-result" hidden></div>
+      </div>
+      <div class="flow-modal-foot" id="flow-modal-foot">
+        <p class="check-summary" id="check-summary"><span class="dot" data-level="idle"></span><span id="check-summary-text">尚未檢驗：填完 ①② 後按「檢驗Sensor與電供」</span></p>
+        <div class="controls" id="flow-controls">
+          <button type="button" class="btn btn-ghost" id="btn-check" disabled title="試收四個感測器 3 秒，並把電源參數寫入電源、讀回比對">檢驗Sensor與電供</button>
+          <button type="button" class="btn btn-start" id="btn-exp-start" disabled>開始實驗</button>
+        </div>
+      </div>
     </div>
   </div>
+
+  <!-- 「⚙ 設定」抽屜（右側滑出）：不常改的設定與次要模式；節點 id 不變，monitor.js 照常操作 -->
+  <div class="drawer" id="settings-drawer" hidden>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-label="設定">
+      <header class="drawer-head"><h2>設定</h2><button type="button" class="flow-modal-close" id="settings-close" aria-label="關閉">&#10005;</button></header>
+      <div class="drawer-body">
+        <details class="group group-fold exp-conn" id="exp-conn">
+          <summary><h2>電源 COM 埠</h2></summary>
+          <label class="field"><span class="field-label">電源 COM 埠</span><input id="exp-port" value="COM8" placeholder="COM8" spellcheck="false"></label>
+        </details>
+
+        <form id="settings" autocomplete="off" novalidate>
+          <details class="group group-fold" id="dev-fold">
+            <summary><h2>裝置</h2></summary>
+            <label class="field">
+              <span class="field-label">溫度感測器 COM 端口</span>
+              <div class="field-row">
+                <input id="com_port" name="com_port" list="com-list" placeholder="例：COM3 或 /dev/cu.usbserial" spellcheck="false">
+                <button type="button" class="btn-icon" id="refresh-com" title="重新整理 COM" aria-label="重新整理 COM">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+              <datalist id="com-list"></datalist>
+              <span class="field-hint" id="com-hint">可從清單選擇或直接輸入</span>
+            </label>
+            <label class="field">
+              <span class="field-label">音訊設備</span>
+              <div class="field-row">
+                <select id="audio_device" name="audio_device"></select>
+                <button type="button" class="btn-icon" id="refresh-audio" title="重新整理音訊" aria-label="重新整理音訊">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </label>
+          </details>
+
+          <details class="group group-fold">
+            <summary><h2>音訊參數</h2></summary>
+            <div class="grid-2">
+              <label class="field">
+                <span class="field-label">採樣率</span>
+                <div class="input-unit"><input id="sample_rate" name="sample_rate" inputmode="numeric" value="22050"><span>Hz</span></div>
+              </label>
+              <label class="field">
+                <span class="field-label">更新間隔</span>
+                <div class="input-unit"><input id="update_interval" name="update_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">頻譜圖顯示長度</span>
+                <div class="input-unit"><input id="history_duration" name="history_duration" inputmode="decimal" value="100"><span>秒</span></div>
+                <span class="field-hint">只影響畫面，不影響存檔；存檔一律保存全程</span>
+              </label>
+            </div>
+          </details>
+
+          <details class="group group-fold">
+            <summary><h2>測距儀</h2></summary>
+            <div class="field">
+              <div class="field-label-row">
+                <label class="field-label" for="refl_mode">反射模式</label>
+                <button type="button" class="help-btn" aria-label="反射模式說明" aria-describedby="refl-tip">
+                  <!-- 自繪 questionmark.circle（不依賴 SF Symbols 字型） -->
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.95 1.95 0 1 1 2.9 1.7c-.7.4-1 .8-1 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="11.5" r=".85" fill="currentColor"/></svg>
+                </button>
+                <div class="help-tip" id="refl-tip" role="tooltip">
+                  <p><b>0-漫反射</b>：霧面、粗糙表面，如塗層、陶瓷、未拋光金屬、紙、樹脂；感測頭垂直對準待測面。</p>
+                  <p><b>1-鏡面反射</b>：鏡面、玻璃、拋光金屬；感測頭需傾斜安裝，讓反射光回到受光部（角度依 KEYENCE 說明書）。</p>
+                  <p>讀值不穩或讀不到時，先確認模式是否符合表面。</p>
+                </div>
+              </div>
+              <select id="refl_mode" name="refl_mode">
+                <option value="0">0-漫反射</option>
+                <option value="1">1-鏡面反射</option>
+              </select>
+            </div>
+            <label class="field">
+              <span class="field-label">測距間隔</span>
+              <div class="input-unit"><input id="distance_interval" name="distance_interval" inputmode="decimal" value="0.1"><span>秒</span></div>
+              <span class="field-hint">程式讀取測距儀的頻率，0.1 秒＝每秒 10 筆，決定存檔資料密度</span>
+            </label>
+          </details>
+
+          <details class="group group-fold">
+            <summary><h2>光譜儀</h2></summary>
+            <div class="grid-2">
+              <div class="field">
+                <div class="field-label-row">
+                  <label class="field-label" for="spec_interval">量測間隔</label>
+                  <button type="button" class="help-btn" aria-label="光譜儀參數說明" aria-describedby="spec-tip">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.1 6.2a1.95 1.95 0 1 1 2.9 1.7c-.7.4-1 .8-1 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="11.5" r=".85" fill="currentColor"/></svg>
+                  </button>
+                  <div class="help-tip" id="spec-tip" role="tooltip">
+                    <p><b>量測間隔</b>：每隔多久量一筆光譜。</p>
+                    <p><b>積分時間</b>：越長訊號越強，但峰值超過 65535 counts 會飽和。</p>
+                  </div>
+                </div>
+                <div class="input-unit"><input id="spec_interval" name="spec_interval" inputmode="decimal" value="0.5"><span>秒</span></div>
+              </div>
+              <label class="field">
+                <span class="field-label">積分時間</span>
+                <div class="input-unit"><input id="spec_integration_ms" name="spec_integration_ms" inputmode="decimal" value="50"><span>ms</span></div>
+              </label>
+            </div>
+          </details>
+        </form>
+
+        <div class="controls controls-test">
+          <button type="button" class="btn btn-sm btn-ghost span-2" id="btn-sensor-test" title="只錄感測器、完全不碰電源，用來排查 sensor 系統錯誤">Sensor 測試模式（不控制電源）</button>
+          <button type="button" class="btn btn-sm btn-ghost span-2 btn-toggle" id="btn-manual" title="直接操作電源面板（不會錄製資料）">電供設定手動模式</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
 
   <dialog id="dlg">
     <form method="dialog" class="dlg-body">

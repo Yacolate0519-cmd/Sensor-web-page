@@ -6,7 +6,7 @@
   const PARAM_KEYS = ["com_port", "audio_device", "sample_rate",
     "update_interval", "history_duration", "refl_mode", "distance_interval",
     "spec_interval", "spec_integration_ms"];
-  // 實驗標籤（正式實驗流程第一步，側欄 #step-labels）：[表單 id, 名稱]，必填檢查與 app/web_monitor.py 的 LABEL_FIELDS 一致
+  // 實驗標籤（正式實驗流程第一步，實驗參數視窗 #step-labels）：[表單 id, 名稱]，必填檢查與 app/web_monitor.py 的 LABEL_FIELDS 一致
   const LABEL_REQUIRED = [["label_metal", "金屬種類"], ["label_electrolyte", "電解液配方與濃度"]];
   // 試片尺寸（長度 cm、面積 cm²）：形狀 → [表單 id, 名稱]；對應 web_monitor.py 的 SPECIMEN_SHAPES
   const SPECIMEN_DIMS = {
@@ -1241,6 +1241,7 @@
     $("btn-check").textContent = checking ? "檢驗中…" : "檢驗Sensor與電供";
     $("btn-exp-start").disabled = !(ready && checkResult && checkResult.can_start && !checkExpired());
     $("btn-sensor-test").disabled = !idle || busy;
+    $("exp-port").disabled = !idle || busy; // 電源 COM 埠在「⚙ 設定」抽屜；實驗中與檢驗中鎖定（原本隨 ② 一起鎖）
     // 結束實驗／結束這場／停止錄製
     let text = "結束實驗", enabled = false;
     if (stopping) text = "儲存中…";
@@ -1254,7 +1255,67 @@
     // 手動模式：實驗中不能進入（電源由實驗流程控制）
     if (exp && manualMode) setManual(false);
     $("btn-manual").disabled = !!exp;
+    // 實驗參數視窗：正式實驗中不能開（參數已鎖定，改看右側「本次參數」）
+    $("btn-flow").hidden = !!exp;
+    if (exp && flowModal.isOpen()) flowModal.close();
     renderExpBar();
+    renderRunPanel();
+  }
+
+  // 「本次參數」面板：正式實驗（或 Sensor 測試錄製）期間顯示；電源參數取自 experiment.recipe、標籤取自 params，
+  // 都是伺服器上這一場的值，所以中途重新整理頁面也正確
+  function renderRunPanel() {
+    const s = state, panel = $("run-panel");
+    if (!s) return;
+    const e = activeExp(s), recording = s.phase === "running" || s.phase === "stopping";
+    panel.hidden = !(e || recording);
+    if (panel.hidden) return;
+    const now = Date.now() / 1000 - clockOffset;
+    let elapsed = 0, total = null, stage, tone = "neutral", note = "";
+    if (e) {
+      total = e.duration_s;
+      if (e.output_on_at) elapsed = Math.max(0, Math.min(total, (e.output_off_at || now) - e.output_on_at));
+      stage = { preparing: "準備中", baseline: "錄製基線", starting: "開啟輸出中", on: "輸出中", ending: "結束中",
+        psu_fault: e.result_label || "電源異常", estop: "已緊急停止" }[e.stage] || e.result_label || "已結束";
+      tone = e.stage === "on" ? "on" : ["psu_fault", "estop"].includes(e.stage) ? "error" : "warn";
+      if (e.stage === "baseline" && e.record_start) note = `${Math.max(0, Math.ceil(e.record_start + e.baseline_s - now))} 秒後開啟輸出（計時從輸出開啟算起）`;
+    } else {
+      elapsed = s.elapsed || 0;
+      total = s.duration > 0 ? s.duration : null;
+      stage = s.mode === "sensor_test" ? "Sensor 測試" : "錄製中";
+      tone = "warn";
+      if (s.mode === "sensor_test") note = "只錄感測器，不控制電源（非正式實驗）";
+    }
+    const badge = $("rp-stage");
+    badge.textContent = stage; badge.dataset.tone = tone;
+    $("rp-elapsed").textContent = $("rp-tab-time").textContent = fmtClock(Math.floor(elapsed));
+    $("rp-total").textContent = total ? fmtClock(Math.round(total)) : "—";
+    $("rp-remain").textContent = total ? fmtClock(Math.max(0, Math.ceil(total - elapsed))) : "—";
+    $("rp-bar").style.width = total ? `${Math.min(100, elapsed / total * 100)}%` : "0%";
+    $("rp-note").hidden = !note; $("rp-note").textContent = note;
+    $("rp-psu").hidden = $("rp-labels").hidden = !e;
+    if (!e) return;
+    const r = e.recipe || {}, p = s.params || {};
+    const key = JSON.stringify([r, p]);
+    if (panel.dataset.key === key) return; // 內容沒變就不重建（每 0.5 秒會呼叫一次）
+    panel.dataset.key = key;
+    const v = (x, unit) => (x === null || x === undefined || x === "" ? "—" : `${x}${unit ? ` ${unit}` : ""}`);
+    const psuRows = [["模式", MODE_NAMES[r.mode] || v(r.mode)], ["頻率 f", v(r.freq_hz, "Hz")],
+      ...(r.mode === "bipulse" ? [["正向佔空比", v(r.pos_pct, "%")], ["負向佔空比", v(r.neg_pct, "%")]] : [["佔空比", v(r.duty_pct, "%")]]),
+      ...(r.control === "cv" ? [["控制方式", `定電壓 U ${v(r.u, "V")}`]] : r.control === "cc" ? [["控制方式", `定電流 I ${v(r.i, "A")}`]]
+        : [["電壓 U", v(r.u, "V")], ["電流 I", v(r.i, "A")]]),
+      ["功率上限 P", v(r.p, "kW")]];
+    const circle = p.label_specimen_shape === "circle";
+    const specimen = circle ? `圓形 ${v(p.label_specimen_area, "cm²")} · 厚 ${v(p.label_specimen_thickness, "cm")}`
+      : `${v(p.label_specimen_length)} × ${v(p.label_specimen_width)} × ${v(p.label_specimen_thickness, "cm")}`;
+    const labelRows = [["金屬", v(p.label_metal)], ["試片", specimen], ["電解液", v(p.label_electrolyte)], ["添加物", v(p.label_additive)]];
+    const fill = (dl, rows) => dl.replaceChildren(...rows.flatMap(([k, val]) => {
+      const dt = document.createElement("dt"), dd = document.createElement("dd");
+      dt.textContent = k; dd.textContent = val;
+      return [dt, dd];
+    }));
+    fill($("rp-psu-list"), psuRows);
+    fill($("rp-labels-list"), labelRows);
   }
 
   function renderExpBar() {
@@ -1291,12 +1352,17 @@
   }
 
   function renderCheck() {
-    const box = $("check-result"), r = checkResult;
+    const box = $("check-result"), r = checkResult, sum = $("check-summary");
     box.hidden = !r; box.replaceChildren();
+    // 視窗底部的檢驗結果摘要（完整明細在上方 #check-result）
+    const title = !r ? "尚未檢驗：填完 ①② 後按「檢驗Sensor與電供」" : !r.can_start ? "不能開始：電源不正常" : r.missing.length
+      ? "電源正常；部分 sensor 異常（可選「仍要開始」）" : `全部正常（試收 ${r.check_s} 秒），可以開始`;
+    const level = !r ? "idle" : !r.can_start ? "error" : r.missing.length ? "warn" : "ok";
+    sum.dataset.level = level; sum.querySelector(".dot").dataset.level = level;
+    $("check-summary-text").textContent = title;
     if (!r) return;
     const line = (cls, text) => { const d = document.createElement("div"); d.className = cls; d.textContent = text; box.append(d); return d; };
-    line("ck-title", !r.can_start ? "不能開始：電源不正常" : r.missing.length
-      ? "電源正常；部分 sensor 異常（可選「仍要開始」）" : `全部正常（試收 ${r.check_s} 秒），可以開始`);
+    line("ck-title", title);
     const row = (ok, name, detail) => {
       const d = line("ck-row", "");
       const dot = document.createElement("span"); dot.className = "dot"; dot.dataset.level = ok ? "ok" : "error";
@@ -1311,9 +1377,11 @@
         + ` · 電源回報實際頻率 f ${fmtNum(a.freq_hz, 0)} Hz、實際佔空比 ${fmtNum(a.duty_pct, 1)} %`);
     }
     (r.system_errors || []).forEach((e) => row(false, "系統", e));
-    // 收合的設定出問題：自動展開對應區塊，讓人看得到要改哪裡
-    if ((r.psu_errors || []).some((e) => /連線/.test(e))) $("exp-conn").open = true;
-    if ((r.system_errors || []).length) $("dev-fold").open = true;
+    // 收合的設定出問題：自動展開對應區塊（在「⚙ 設定」抽屜裡），並提示去哪裡改
+    const connErr = (r.psu_errors || []).some((e) => /連線/.test(e)), sysErr = (r.system_errors || []).length > 0;
+    if (connErr) $("exp-conn").open = true;
+    if (sysErr) $("dev-fold").open = true;
+    if (connErr || sysErr) line("ck-detail", `請到頂列「⚙ 設定」檢查${connErr ? "「電源 COM 埠」" : ""}${sysErr ? "「裝置」" : ""}`);
     Object.values(r.sensors).forEach((v) => row(v.ok, v.name, v.ok ? `正常（有效數據 ${v.valid} 筆）` : `${v.reason_label}：${v.detail}`));
   }
 
@@ -1908,49 +1976,72 @@
   }
 
   // ------------------------------------------------------------------
-  // 設定視窗：側欄 ①② 被 hover/點擊/focus 時，把原節點搬進置中 modal，關閉時搬回
+  // 實驗參數視窗（置中 modal）：沒有進行中的實驗時開頁自動彈出，頂列「實驗參數」可重開；✕／Esc／點背景關閉
   // ------------------------------------------------------------------
   const flowModal = (() => {
-    const modal = $("flow-modal"), body = $("flow-modal-body"), foot = $("flow-modal-foot");
-    const flow = $("flow"), controls = $("flow-controls"), check = $("check-result");
-    const sidebar = flow.parentNode;
-    let timer = null, lastFocus = null;
+    const modal = $("flow-modal");
+    let lastFocus = null;
     const isOpen = () => !modal.hidden;
     function open() {
-      clearTimeout(timer);
       if (isOpen() || activeExp(state)) return;
       lastFocus = document.activeElement;
-      body.append(flow, check); foot.append(controls); // 按鈕固定在視窗底部，不隨內容捲動
       modal.hidden = false;
       document.body.style.overflow = "hidden";
     }
     function close() {
-      clearTimeout(timer);
       if (!isOpen()) return;
       modal.hidden = true;
-      document.body.style.overflow = "";
-      const anchor = $("settings");
-      sidebar.insertBefore(flow, anchor);
-      const tail = sidebar.querySelector(".controls-test");
-      sidebar.insertBefore(controls, tail); sidebar.insertBefore(check, tail);
+      if (!settingsDrawer.isOpen()) document.body.style.overflow = "";
       if (lastFocus && lastFocus.isConnected && lastFocus.focus) lastFocus.focus();
     }
-    const arm = () => { if (!isOpen() && !timer) timer = setTimeout(() => { timer = null; open(); }, 300); };
-    const disarm = () => { clearTimeout(timer); timer = null; };
-    ["step-labels", "step-psu"].forEach((id) => {
-      const el = $(id);
-      el.addEventListener("mouseenter", arm);
-      el.addEventListener("mouseleave", disarm);
-      el.addEventListener("click", open);
-      el.addEventListener("focusin", open);
-    });
+    $("btn-flow").addEventListener("click", open);
     $("flow-modal-close").addEventListener("click", close);
     modal.addEventListener("mousedown", (e) => { if (e.target === modal) close(); });
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && isOpen() && !$("dlg").open) { e.preventDefault(); close(); }
-    });
     return { open, close, isOpen };
   })();
+
+  // 「⚙ 設定」抽屜（右側滑出）：電源 COM 埠、裝置與感測器參數、Sensor 測試模式、電供設定手動模式
+  const settingsDrawer = (() => {
+    const drawer = $("settings-drawer");
+    let lastFocus = null;
+    const isOpen = () => !drawer.hidden;
+    function open() {
+      if (isOpen()) return;
+      lastFocus = document.activeElement;
+      drawer.hidden = false;
+      document.body.style.overflow = "hidden";
+      $("settings-close").focus();
+    }
+    function close() {
+      if (!isOpen()) return;
+      drawer.hidden = true;
+      if (!flowModal.isOpen()) document.body.style.overflow = "";
+      if (lastFocus && lastFocus.isConnected && lastFocus.focus) lastFocus.focus();
+    }
+    $("btn-settings").addEventListener("click", open);
+    $("settings-close").addEventListener("click", close);
+    drawer.addEventListener("mousedown", (e) => { if (e.target === drawer) close(); });
+    // 進入手動模式或 Sensor 測試：關掉抽屜，讓人看到電源面板／圖表
+    ["btn-manual", "btn-sensor-test"].forEach((id) => $(id).addEventListener("click", close));
+    return { open, close, isOpen };
+  })();
+
+  document.addEventListener("keydown", (e) => { // Esc 先關最上層（抽屜疊在參數視窗之上）
+    if (e.key !== "Escape" || $("dlg").open) return;
+    if (settingsDrawer.isOpen()) { e.preventDefault(); settingsDrawer.close(); }
+    else if (flowModal.isOpen()) { e.preventDefault(); flowModal.close(); }
+  });
+
+  // 「本次參數」面板收合：記在 localStorage（私密視窗等可能無法存取，失敗就用預設展開）
+  const RUN_PANEL_KEY = "monitor.runPanelCollapsed";
+  function setRunPanelCollapsed(collapsed, save) {
+    $("run-panel").classList.toggle("collapsed", collapsed);
+    $("run-panel-toggle").setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (save) try { localStorage.setItem(RUN_PANEL_KEY, collapsed ? "1" : "0"); } catch { /* 存不了就只在這次有效 */ }
+  }
+  try { setRunPanelCollapsed(localStorage.getItem(RUN_PANEL_KEY) === "1", false); } catch { setRunPanelCollapsed(false, false); }
+  $("run-panel-toggle").addEventListener("click", () =>
+    setRunPanelCollapsed(!$("run-panel").classList.contains("collapsed"), true));
 
   // ------------------------------------------------------------------
   // 初始化
@@ -1962,11 +2053,11 @@
   $("btn-sensor-test").addEventListener("click", onSensorTest);
   $("btn-manual").addEventListener("click", onManual);
   // 流程或裝置設定任何輸入改變：上一次的檢驗結果作廢，要重新「檢驗Sensor與電供」
-  document.querySelectorAll("#flow input, #settings input, #settings select").forEach((el) => {
+  document.querySelectorAll("#flow input, #exp-port, #settings input, #settings select").forEach((el) => {
     el.addEventListener("input", invalidateCheck);
     el.addEventListener("change", invalidateCheck);
   });
-  setInterval(renderExpBar, 500); // 實驗狀態列的倒數
+  setInterval(() => { renderExpBar(); renderRunPanel(); }, 500); // 實驗狀態列與「本次參數」的計時
   setInterval(() => { if (checkResult && checkExpired()) invalidateCheck(); }, 5000); // 檢驗結果 5 分鐘後作廢
   $("refresh-com").addEventListener("click", () => loadCom(false));
   $("refresh-audio").addEventListener("click", () => loadAudio(true));
@@ -1989,6 +2080,8 @@
     connect();
     await Promise.all([loadCom(false), loadAudio(false)]);
     await sync();
+    // 沒有進行中的實驗（也不在錄製中）：開頁直接彈出實驗參數視窗
+    if (state && !activeExp(state) && !["running", "stopping"].includes(state.phase)) flowModal.open();
     loadPsu();
   })();
 })();
