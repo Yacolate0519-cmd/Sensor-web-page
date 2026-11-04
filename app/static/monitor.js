@@ -1227,6 +1227,7 @@
     } else if (running) { text = "停止錄製"; enabled = true; }
     $("btn-stop").disabled = !enabled;
     $("btn-stop").textContent = text;
+    $("btn-stop").classList.toggle("btn-stop-solid", text === "停止錄製");
     $("btn-estop").hidden = !(exp || (psu.snap && psu.snap.connected));
     // 手動模式：實驗中不能進入（電源由實驗流程控制）
     if (exp && manualMode) setManual(false);

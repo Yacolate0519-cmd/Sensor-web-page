@@ -194,6 +194,8 @@ input[aria-invalid="true"] { border-color: var(--err); }
 .btn-start { background: var(--accent); color: var(--accent-text); }
 .btn-stop { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
 .btn-stop:not(:disabled):hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.btn-stop.btn-stop-solid { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-stop.btn-stop-solid:not(:disabled):hover { background: var(--danger); filter: brightness(1.1); }
 .btn-start:not(:disabled):hover { filter: brightness(1.08); }
 .btn-ghost { background: transparent; color: var(--text-2); border-color: var(--border-strong); }
 .last-result {
