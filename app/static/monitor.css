@@ -26,7 +26,7 @@
   --chart-tick: #8a94a3;
   --chart-wave: #5b9dff;
   --chart-fft: #ff6b6b;
-  --chart-out: #2e9e4f; /* 輸出電壓 U（電源控制值）：綠 */
+  --chart-out: #2e9e4f; /* 輸出電壓（電源控制值）：綠 */
 
   --radius: 8px;
   --radius-sm: 6px;

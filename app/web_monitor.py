@@ -1998,9 +1998,9 @@ class MonitorService:
                 except (TypeError, ValueError):
                     main_ok = False
                 if not main_ok:
-                    raise ValueError(f"{'電壓設定 U' if control == 'cv' else '電流設定 I'}必須大於 0")
+                    raise ValueError(f"{'電壓設定' if control == 'cv' else '電流設定'}必須大於 0")
                 r = {**r, free: RECIPE_LIMITS[free]}
-            plan_recipe({}, r)  # 模式、頻率、佔空比、U/I/P 範圍（同電源面板的「套用設定」）
+            plan_recipe({}, r)  # 模式、頻率、佔空比、電壓/電流/功率範圍（同電源面板的「套用設定」）
             recipe = {"mode": r["mode"], "freq_hz": float(r["freq_hz"]),
                       **({"pos_pct": float(r["pos_pct"]), "neg_pct": float(r["neg_pct"])} if r["mode"] == "bipulse"
                          else {"duty_pct": float(r["duty_pct"])}),
@@ -2014,7 +2014,7 @@ class MonitorService:
             recipe["off_time_unverified"] = off_time_unverified(off)
             recipe["pulse_formula"] = PULSE_FORMULA
             if recipe["u"] <= 0 or recipe["i"] <= 0:
-                raise ValueError("電壓上限 U 與電流上限 I 都必須大於 0，否則電源不會輸出")
+                raise ValueError("電壓上限與電流上限都必須大於 0，否則電源不會輸出")
         except (ValueError, TypeError, KeyError) as e:
             errors.append(f"電源參數錯誤：{e}")
             recipe = None
@@ -2044,7 +2044,7 @@ class MonitorService:
         mismatch = recipe_readback_errors(readback, recipe)
         snap = psu.snapshot()
         sp, meas = snap["setpoints"], snap["measurements"]
-        for k, label in (("u", "電壓上限 U"), ("i", "電流上限 I"), ("p", "功率上限 P")):
+        for k, label in (("u", "電壓上限"), ("i", "電流上限"), ("p", "功率上限")):
             if abs(sp[k] - recipe[k]) > 1e-6:
                 mismatch.append(f"{label}讀回 {sp[k]:g}，應為 {recipe[k]:g}")
         self.psu_recipe_errors = mismatch
@@ -3420,7 +3420,7 @@ def _psu_check_unlocked():
 
 
 def _psu_unlocked():
-    """正式實驗進行中不能改 U/I/P、寫參數、開輸出、重設警報或斷線（只能關閉／緊急停止）。"""
+    """正式實驗進行中不能改電壓/電流/功率、寫參數、開輸出、重設警報或斷線（只能關閉／緊急停止）。"""
     _psu_check_unlocked()
     return _psu_connected()
 
