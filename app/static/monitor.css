@@ -599,3 +599,6 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .chart-legend { font-size: 12px; font-weight: 400; margin-left: 8px; }
 .chart-legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin: 0 4px 0 8px; }
 .pulse-line[data-level="warn"] { color: var(--warn); }
+
+/* English UI（i18n.js 設 <html lang="en">）：英文字串較長，緊急停止鈕不換行 */
+html[lang="en"] .btn-estop-top { white-space: nowrap; }

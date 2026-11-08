@@ -148,11 +148,11 @@
       ctx.fillStyle = theme.text;
       ctx.font = `11.5px ${theme.font}`;
       ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-      ctx.fillText(labels[0], p.x + p.w / 2, this.h - 2);
+      ctx.fillText(I18N.tr(labels[0]), p.x + p.w / 2, this.h - 2);
       ctx.save();
       ctx.translate(12, p.y + p.h / 2); ctx.rotate(-Math.PI / 2);
       ctx.textBaseline = "middle";
-      ctx.fillText(labels[1], 0, 0);
+      ctx.fillText(I18N.tr(labels[1]), 0, 0);
       ctx.restore();
       return { X, Y };
     }
@@ -161,7 +161,7 @@
       ctx.fillStyle = theme.faint;
       ctx.font = `12.5px ${theme.font}`;
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(text, p.x + p.w / 2, p.y + p.h / 2);
+      ctx.fillText(I18N.tr(text), p.x + p.w / 2, p.y + p.h / 2);
     }
   }
 
@@ -270,7 +270,7 @@
       const failed = k !== pts.length - 1;
       const px = X(pts[k][0]), py = Y(pts[k][1]);
       const ctx = this.ctx;
-      const text = failed ? (this.statusText || "讀取失敗") : `${tag}${pts[k][1].toFixed(this.opts.decimals)} ${this.opts.unit}`;
+      const text = I18N.tr(failed ? (this.statusText || "讀取失敗") : `${tag}${pts[k][1].toFixed(this.opts.decimals)} ${this.opts.unit}`);
       const bg = failed ? theme.warn : color;
       ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2);
       ctx.fillStyle = bg; ctx.fill();
@@ -376,7 +376,7 @@
     ctx.fillStyle = theme.text; ctx.font = `11.5px ${theme.font}`;
     ctx.translate(chart.w - 8, by + bh / 2); ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(label, 0, 0);
+    ctx.fillText(I18N.tr(label), 0, 0);
     ctx.restore();
   }
 
@@ -712,6 +712,7 @@
       });
       // 角落警告：飽和（右上）、讀取失敗（左上，保留最後一筆）
       const badge = (text, right, y) => {
+        text = I18N.tr(text);
         ctx.font = `600 11.5px ${theme.mono}`;
         const bw = Math.ceil(ctx.measureText(text).width) + 14, bh = 20;
         const bx = right ? p.x + p.w - bw - 6 : p.x + 6;
